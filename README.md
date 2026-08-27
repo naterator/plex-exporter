@@ -1,7 +1,6 @@
 # plex-exporter
 
 [![CI](https://github.com/naterator/plex-exporter/actions/workflows/ci.yml/badge.svg)](https://github.com/naterator/plex-exporter/actions/workflows/ci.yml)
-[![Go Report Card](https://goreportcard.com/badge/github.com/naterator/plex-exporter)](https://goreportcard.com/report/github.com/naterator/plex-exporter)
 [![License: BSD-3-Clause](https://img.shields.io/badge/license-BSD--3--Clause-blue.svg)](LICENSE)
 
 `plex-exporter` exposes Plex Media Server metrics in Prometheus format. It
