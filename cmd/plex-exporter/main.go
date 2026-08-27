@@ -72,6 +72,7 @@ func main() {
 	// container environment variables (including .env files) are available, causing
 	// LOG_LEVEL=debug and similar settings to be ignored.
 	logger = createLogger()
+	plex.ConfigureClientLogger(logger)
 
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 
