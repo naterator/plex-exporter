@@ -53,6 +53,31 @@ func TestParseLibraryRefreshInterval(t *testing.T) {
 	}
 }
 
+func TestParseLibraryMetadataRefreshInterval(t *testing.T) {
+	tests := []struct {
+		name  string
+		value string
+		want  time.Duration
+		valid bool
+	}{
+		{name: "unset", value: "", want: 15 * time.Minute, valid: true},
+		{name: "disabled", value: "0", want: 0, valid: true},
+		{name: "custom", value: "5", want: 5 * time.Minute, valid: true},
+		{name: "negative", value: "-1", want: 15 * time.Minute, valid: false},
+		{name: "not an integer", value: "five", want: 15 * time.Minute, valid: false},
+		{name: "overflow", value: "999999999999999999999", want: 15 * time.Minute, valid: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, valid := parseLibraryMetadataRefreshInterval(tt.value)
+			if got != tt.want || valid != tt.valid {
+				t.Fatalf("parseLibraryMetadataRefreshInterval(%q) = (%v, %t), want (%v, %t)", tt.value, got, valid, tt.want, tt.valid)
+			}
+		})
+	}
+}
+
 func (f *fakeRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
 	var body string
 	// Normalize URL: ignore includeMeta query parameter to remain compatible
@@ -1151,10 +1176,11 @@ func newRefreshFixtureServer(t *testing.T, rt *refreshFixtureRoundTripper) *Serv
 	client.httpClient = http.Client{Transport: rt, Timeout: time.Second}
 
 	return &Server{
-		URL:                    client.URL,
-		Token:                  client.Token,
-		Client:                 client,
-		LibraryRefreshInterval: time.Hour,
+		URL:                            client.URL,
+		Token:                          client.Token,
+		Client:                         client,
+		LibraryRefreshInterval:         time.Hour,
+		LibraryMetadataRefreshInterval: time.Hour,
 	}
 }
 
@@ -1253,6 +1279,9 @@ func TestRefreshSkipsLibraryEnumerationWithinInterval(t *testing.T) {
 	if got := rt.count("/library/sections/music/all?type=10"); got != 1 {
 		t.Fatalf("expected one music enumeration on first refresh, got %d", got)
 	}
+	if got := rt.count("/media/providers?includeStorage=1"); got != 1 {
+		t.Fatalf("expected one metadata refresh on first refresh, got %d", got)
+	}
 
 	if err := s.Refresh(); err != nil {
 		t.Fatalf("second Refresh: %v", err)
@@ -1263,8 +1292,72 @@ func TestRefreshSkipsLibraryEnumerationWithinInterval(t *testing.T) {
 	if got := rt.count("/library/sections/music/all?type=10"); got != 1 {
 		t.Fatalf("music enumeration repeated within interval: %d requests", got)
 	}
+	if got := rt.count("/media/providers?includeStorage=1"); got != 1 {
+		t.Fatalf("library metadata repeated within interval: %d requests", got)
+	}
+	for _, endpoint := range []string{"/", "/statistics/resources?timespan=6", "/statistics/bandwidth?timespan=6"} {
+		if got := rt.count(endpoint); got != 2 {
+			t.Errorf("fast endpoint %s request count = %d, want 2", endpoint, got)
+		}
+	}
 	if s.EpisodeCount != 42 || s.MusicCount != 12 {
 		t.Fatalf("cached totals changed unexpectedly: episodes=%d music=%d", s.EpisodeCount, s.MusicCount)
+	}
+}
+
+func TestRefreshLibraryMetadataAfterInterval(t *testing.T) {
+	rt := &refreshFixtureRoundTripper{}
+	s := newRefreshFixtureServer(t, rt)
+
+	if err := s.Refresh(); err != nil {
+		t.Fatalf("first Refresh: %v", err)
+	}
+	s.nextLibraryMetadataRefresh = time.Now().Add(-time.Second)
+	if err := s.Refresh(); err != nil {
+		t.Fatalf("second Refresh: %v", err)
+	}
+
+	if got := rt.count("/media/providers?includeStorage=1"); got != 2 {
+		t.Fatalf("metadata refresh count after interval = %d, want 2", got)
+	}
+}
+
+func TestRefreshBacksOffFailedLibraryMetadata(t *testing.T) {
+	rt := &refreshFixtureRoundTripper{}
+	s := newRefreshFixtureServer(t, rt)
+
+	if err := s.Refresh(); err != nil {
+		t.Fatalf("initial Refresh: %v", err)
+	}
+	rt.mu.Lock()
+	rt.fail = map[string]bool{"/media/providers?includeStorage=1": true}
+	rt.mu.Unlock()
+	s.nextLibraryMetadataRefresh = time.Now().Add(-time.Second)
+
+	if err := s.Refresh(); err == nil {
+		t.Fatal("metadata refresh failure returned nil error")
+	}
+	if err := s.Refresh(); err != nil {
+		t.Fatalf("refresh during metadata backoff: %v", err)
+	}
+	if got := rt.count("/media/providers?includeStorage=1"); got != 2 {
+		t.Fatalf("failed metadata request retried within interval: %d requests", got)
+	}
+}
+
+func TestRefreshLibraryMetadataWithoutCaching(t *testing.T) {
+	rt := &refreshFixtureRoundTripper{}
+	s := newRefreshFixtureServer(t, rt)
+	s.LibraryMetadataRefreshInterval = 0
+
+	if err := s.Refresh(); err != nil {
+		t.Fatalf("first Refresh: %v", err)
+	}
+	if err := s.Refresh(); err != nil {
+		t.Fatalf("second Refresh: %v", err)
+	}
+	if got := rt.count("/media/providers?includeStorage=1"); got != 2 {
+		t.Fatalf("metadata refresh count with caching disabled = %d, want 2", got)
 	}
 }
 

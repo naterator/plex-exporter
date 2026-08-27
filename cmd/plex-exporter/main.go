@@ -109,6 +109,12 @@ func main() {
 	} else {
 		libRefresh += " (minutes; 0 = disable caching)"
 	}
+	metadataRefresh := os.Getenv("LIBRARY_METADATA_REFRESH_INTERVAL")
+	if metadataRefresh == "" {
+		metadataRefresh = "15 (minutes, default; 0 = disable caching)"
+	} else {
+		metadataRefresh += " (minutes; 0 = disable caching)"
+	}
 	logLevel := os.Getenv("LOG_LEVEL")
 	if logLevel == "" {
 		logLevel = "info"
@@ -125,6 +131,7 @@ func main() {
 		zap.String("PLEX_SERVER", serverAddress),
 		zap.String("PLEX_TOKEN", maskToken(plexToken)),
 		zap.String("LIBRARY_REFRESH_INTERVAL", libRefresh),
+		zap.String("LIBRARY_METADATA_REFRESH_INTERVAL", metadataRefresh),
 		zap.String("LOG_LEVEL", logLevel),
 		zap.String("SKIP_TLS_VERIFICATION", skipTLS),
 		zap.String("TZ", tzResolved),

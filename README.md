@@ -47,6 +47,7 @@ network, or place it behind an authenticated reverse proxy.
 | `PLEX_SERVER` | required | Full `http` or `https` URL of the Plex server. |
 | `PLEX_TOKEN` | required | Plex [authentication token](https://support.plex.tv/articles/204059436-finding-an-authentication-token-x-plex-token/). |
 | `LIBRARY_REFRESH_INTERVAL` | `15` | Minutes between expensive library-count queries. `0` disables caching and queries on every five-second refresh. |
+| `LIBRARY_METADATA_REFRESH_INTERVAL` | `15` | Minutes between library inventory and storage-total queries. `0` queries on every five-second refresh. |
 | `PLEX_CLIENT_TIMEOUT_SECONDS` | `10` | Timeout for Plex HTTP requests. |
 | `LOG_LEVEL` | `info` | `debug`, `info`, `warn`, or `error`. |
 | `LOG_FORMAT` | JSON | Set to `console` for human-readable output. |
@@ -59,14 +60,19 @@ option or configure variables through your service manager.
 
 ### Library refresh behavior
 
-The exporter performs a lightweight discovery at startup, waits about 15
-seconds before its first full library count, and refreshes current server data
-every five seconds. Expensive item, episode, and track counts are reused until
-`LIBRARY_REFRESH_INTERVAL` expires. Failed requests are not retried until that
-interval expires, preventing rapid retries against an unavailable Plex server.
+The exporter discovers the library inventory at startup, waits about 15 seconds
+before its first full library count, and refreshes current server data every
+five seconds. Library inventory and storage totals are reused until
+`LIBRARY_METADATA_REFRESH_INTERVAL` expires because Plex's
+`/media/providers?includeStorage=1` endpoint can scan a substantial portion of
+large library databases. Expensive item, episode, and track counts are reused
+until `LIBRARY_REFRESH_INTERVAL` expires. Failed metadata or count requests are
+not retried until their corresponding interval expires, preventing rapid
+retries against an unavailable Plex server.
 
-Keep the default interval unless you need fresher library counts. Setting it to
-`0` can create substantial Plex and storage I/O on large libraries.
+Keep the default intervals unless you need fresher library metadata or counts.
+Setting either interval to `0` can create substantial Plex and storage I/O on
+large libraries.
 
 ## Metrics
 

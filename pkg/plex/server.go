@@ -25,8 +25,9 @@ import (
 // Note: Some Plex servers use type=10 for tracks instead of type=7
 
 const (
-	defaultLibraryRefreshInterval = 15 * time.Minute
-	maxLibraryRefreshMinutes      = int64((1<<63 - 1) / int64(time.Minute))
+	defaultLibraryRefreshInterval         = 15 * time.Minute
+	defaultLibraryMetadataRefreshInterval = 15 * time.Minute
+	maxLibraryRefreshMinutes              = int64((1<<63 - 1) / int64(time.Minute))
 )
 
 // getContentTypeForLibrary returns a descriptive label for what type of items
@@ -78,6 +79,13 @@ type Server struct {
 	// LibraryRefreshInterval controls how often we re-query expensive per-library
 	// counts (music tracks, episodes). If zero, caching is disabled.
 	LibraryRefreshInterval time.Duration
+	// LibraryMetadataRefreshInterval controls how often we call
+	// /media/providers?includeStorage=1 to refresh the library inventory and its
+	// storage totals. If zero, metadata is refreshed on every five-second tick.
+	LibraryMetadataRefreshInterval time.Duration
+	// nextLibraryMetadataRefresh is guarded by refreshMu. Advancing it before an
+	// attempt also rate-limits failures instead of retrying every five seconds.
+	nextLibraryMetadataRefresh time.Time
 	// Debug enables verbose debug logging when true.
 	Debug bool
 
@@ -214,6 +222,18 @@ func NewServer(serverURL, token string) (*Server, error) {
 			zap.String("note", "expected a non-negative integer number of minutes; falling back to 15 minutes"))
 	}
 
+	// Library discovery can be unexpectedly expensive on large Plex databases,
+	// even though it returns only a small metadata response. Keep it independent
+	// from both the five-second server-metrics loop and the item-count interval.
+	rawMetadataRefreshInterval := os.Getenv("LIBRARY_METADATA_REFRESH_INTERVAL")
+	metadataInterval, validMetadataInterval := parseLibraryMetadataRefreshInterval(rawMetadataRefreshInterval)
+	server.LibraryMetadataRefreshInterval = metadataInterval
+	if rawMetadataRefreshInterval != "" && !validMetadataInterval {
+		packageLogger().Warn("invalid LIBRARY_METADATA_REFRESH_INTERVAL",
+			zap.String("value", rawMetadataRefreshInterval),
+			zap.String("note", "expected a non-negative integer number of minutes; falling back to 15 minutes"))
+	}
+
 	// Configure debug behavior via LOG_LEVEL (debug|info|warn|error). If
 	// LOG_LEVEL=="debug" enable server debug features.
 	if v := os.Getenv("LOG_LEVEL"); strings.ToLower(v) == "debug" {
@@ -226,6 +246,12 @@ func NewServer(serverURL, token string) (*Server, error) {
 	} else {
 		packageLogger().Info("Library refresh interval set",
 			zap.Int("minutes", int(server.LibraryRefreshInterval.Minutes())))
+	}
+	if server.LibraryMetadataRefreshInterval == 0 {
+		packageLogger().Info("Library metadata refresh interval disabled; caching is off")
+	} else {
+		packageLogger().Info("Library metadata refresh interval set",
+			zap.Int("minutes", int(server.LibraryMetadataRefreshInterval.Minutes())))
 	}
 
 	// Perform a fast, lightweight refresh at startup to populate basic
@@ -336,13 +362,21 @@ func (s *Server) Close() {
 }
 
 func parseLibraryRefreshInterval(value string) (time.Duration, bool) {
+	return parseRefreshInterval(value, defaultLibraryRefreshInterval)
+}
+
+func parseLibraryMetadataRefreshInterval(value string) (time.Duration, bool) {
+	return parseRefreshInterval(value, defaultLibraryMetadataRefreshInterval)
+}
+
+func parseRefreshInterval(value string, defaultInterval time.Duration) (time.Duration, bool) {
 	if value == "" {
-		return defaultLibraryRefreshInterval, true
+		return defaultInterval, true
 	}
 
 	minutes, err := strconv.ParseInt(value, 10, 64)
 	if err != nil || minutes < 0 || minutes > maxLibraryRefreshMinutes {
-		return defaultLibraryRefreshInterval, false
+		return defaultInterval, false
 	}
 
 	return time.Duration(minutes) * time.Minute, true
@@ -356,11 +390,10 @@ func (s *Server) Refresh() error {
 	s.refreshMu.Lock()
 	defer s.refreshMu.Unlock()
 
-	// Refresh metadata and the inexpensive server metrics on every tick. The
-	// expensive per-library enumeration below is independently rate limited so
-	// that server/session metrics stay responsive without repeatedly scanning
-	// large libraries.
-	if err := s.refreshLibraryMetadata(); err != nil {
+	// Keep current server metrics on the five-second loop, but discover library
+	// metadata only when its independent interval is due. Plex may scan tens of
+	// MiB of database pages to answer /media/providers?includeStorage=1.
+	if err := s.refreshLibraryMetadataIfDue(time.Now()); err != nil {
 		return err
 	}
 	if err := s.refreshServerInfo(); err != nil {
@@ -420,10 +453,9 @@ func (s *Server) Refresh() error {
 	return nil
 }
 
-// RefreshLight updates server metadata and inexpensive metrics without
+// RefreshLight updates due server metadata and inexpensive metrics without
 // enumerating every library item. It is used during startup while the first
-// full refresh is deferred, and remains useful to callers that only need the
-// current server/library inventory.
+// full refresh is deferred.
 func (s *Server) RefreshLight() error {
 	s.refreshMu.Lock()
 	defer s.refreshMu.Unlock()
@@ -434,7 +466,7 @@ func (s *Server) RefreshLight() error {
 // refreshLight is the lock-free implementation shared by Refresh and
 // RefreshLight. The caller must hold refreshMu when using it.
 func (s *Server) refreshLight() error {
-	if err := s.refreshLibraryMetadata(); err != nil {
+	if err := s.refreshLibraryMetadataIfDue(time.Now()); err != nil {
 		return err
 	}
 
@@ -445,6 +477,22 @@ func (s *Server) refreshLight() error {
 	_ = s.refreshResources()
 
 	return nil
+}
+
+// refreshLibraryMetadataIfDue refreshes the library inventory at most once per
+// configured interval. The caller must hold refreshMu. The next attempt is
+// scheduled before issuing the request so failures cannot create a five-second
+// retry storm. A zero interval preserves the opt-out behavior and refreshes on
+// every call.
+func (s *Server) refreshLibraryMetadataIfDue(now time.Time) error {
+	if s.LibraryMetadataRefreshInterval > 0 {
+		if !s.nextLibraryMetadataRefresh.IsZero() && now.Before(s.nextLibraryMetadataRefresh) {
+			return nil
+		}
+		s.nextLibraryMetadataRefresh = now.Add(s.LibraryMetadataRefreshInterval)
+	}
+
+	return s.refreshLibraryMetadata()
 }
 
 // ensureLibraryItemsCount populates lib.ItemsCount using cached values when
