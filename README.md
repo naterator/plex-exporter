@@ -189,6 +189,9 @@ The optional [preview renderer](tools/render-dashboard-preview.js) needs Node.js
 Playwright, and a headless browser. Set `GRAFANA_URL`, `GRAFANA_USER`, and
 `GRAFANA_PASSWORD`, then run it from the repository root. It renders example
 data through Grafana's snapshot viewer and doesn't save a dashboard to Grafana.
+The preview checks layout only. To check queries, load the dashboard against
+Prometheus in Grafana and inspect the browser's data-source requests. Include an
+instance name with dots when checking variable interpolation.
 
 CI checks formatting, module files, lint, vet, race tests, cross-platform
 builds, and container builds. A successful build on `main` publishes the image

@@ -11,7 +11,7 @@
   "timezone": "browser",
   "editable": true,
   "schemaVersion": 39,
-  "version": 2,
+  "version": 3,
   "graphTooltip": 1,
   "refresh": "1m",
   "time": {
@@ -67,7 +67,7 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "min(up{job=~\"${job:regex}\",instance=~\"${instance:regex}\"})",
+          "expr": "min(up{job=\"$job\",instance=\"$instance\"})",
           "format": "time_series",
           "instant": true,
           "legendFormat": "",
@@ -151,7 +151,7 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "min(plex_operation_success{operation=\"sessions\",job=~\"${job:regex}\",instance=~\"${instance:regex}\"})",
+          "expr": "min(plex_operation_success{operation=\"sessions\",job=\"$job\",instance=\"$instance\"})",
           "format": "time_series",
           "instant": true,
           "legendFormat": "",
@@ -220,7 +220,7 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "plex_websocket_connected{job=~\"${job:regex}\",instance=~\"${instance:regex}\"}",
+          "expr": "plex_websocket_connected{job=\"$job\",instance=\"$instance\"}",
           "format": "time_series",
           "instant": true,
           "legendFormat": "",
@@ -289,7 +289,7 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "sum(plex_sessions{state=~\"playing|paused|buffering\",job=~\"${job:regex}\",instance=~\"${instance:regex}\",server_type=\"plex\"})",
+          "expr": "sum(plex_sessions{state=~\"playing|paused|buffering\",job=\"$job\",instance=\"$instance\",server_type=\"plex\"})",
           "format": "time_series",
           "instant": true,
           "legendFormat": "",
@@ -345,7 +345,7 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "(time() - max(plex_operation_last_success_timestamp_seconds{operation=\"sessions\",job=~\"${job:regex}\",instance=~\"${instance:regex}\"})) and (max(plex_operation_last_success_timestamp_seconds{operation=\"sessions\",job=~\"${job:regex}\",instance=~\"${instance:regex}\"}) > 0)",
+          "expr": "(time() - max(plex_operation_last_success_timestamp_seconds{operation=\"sessions\",job=\"$job\",instance=\"$instance\"})) and (max(plex_operation_last_success_timestamp_seconds{operation=\"sessions\",job=\"$job\",instance=\"$instance\"}) > 0)",
           "format": "time_series",
           "instant": true,
           "legendFormat": "",
@@ -418,7 +418,7 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "time() - max(process_start_time_seconds{job=~\"${job:regex}\",instance=~\"${instance:regex}\"})",
+          "expr": "time() - max(process_start_time_seconds{job=\"$job\",instance=\"$instance\"})",
           "format": "time_series",
           "instant": true,
           "legendFormat": "",
@@ -474,7 +474,7 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "sum by (state) (plex_sessions{job=~\"${job:regex}\",instance=~\"${instance:regex}\",server_type=\"plex\"})",
+          "expr": "sum by (state) (plex_sessions{job=\"$job\",instance=\"$instance\",server_type=\"plex\"})",
           "format": "time_series",
           "instant": false,
           "legendFormat": "{{state}}",
@@ -543,7 +543,7 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "min by (operation) (plex_operation_success{job=~\"${job:regex}\",instance=~\"${instance:regex}\"})",
+          "expr": "min by (operation) (plex_operation_success{job=\"$job\",instance=\"$instance\"})",
           "format": "time_series",
           "instant": false,
           "legendFormat": "{{operation}}",
@@ -626,7 +626,7 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "max by (server, version, platform, platform_version) (server_info{job=~\"${job:regex}\",instance=~\"${instance:regex}\",server_type=\"plex\"})",
+          "expr": "max by (server, version, platform, platform_version) (server_info{job=\"$job\",instance=\"$instance\",server_type=\"plex\"})",
           "format": "table",
           "instant": true,
           "legendFormat": "",
@@ -692,7 +692,7 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "host_cpu_util{job=~\"${job:regex}\",instance=~\"${instance:regex}\",server_type=\"plex\"}",
+          "expr": "host_cpu_util{job=\"$job\",instance=\"$instance\",server_type=\"plex\"}",
           "format": "time_series",
           "instant": false,
           "legendFormat": "CPU",
@@ -706,7 +706,7 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "host_mem_util{job=~\"${job:regex}\",instance=~\"${instance:regex}\",server_type=\"plex\"}",
+          "expr": "host_mem_util{job=\"$job\",instance=\"$instance\",server_type=\"plex\"}",
           "format": "time_series",
           "instant": false,
           "legendFormat": "Memory",
@@ -776,7 +776,7 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "rate(transmit_bytes_total{job=~\"${job:regex}\",instance=~\"${instance:regex}\",server_type=\"plex\"}[$__rate_interval])",
+          "expr": "rate(transmit_bytes_total{job=\"$job\",instance=\"$instance\",server_type=\"plex\"}[$__rate_interval])",
           "format": "time_series",
           "instant": false,
           "legendFormat": "Reported",
@@ -790,7 +790,7 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "rate(estimated_transmit_bytes_total{job=~\"${job:regex}\",instance=~\"${instance:regex}\",server_type=\"plex\"}[$__rate_interval])",
+          "expr": "rate(estimated_transmit_bytes_total{job=\"$job\",instance=\"$instance\",server_type=\"plex\"}[$__rate_interval])",
           "format": "time_series",
           "instant": false,
           "legendFormat": "Estimated",
@@ -873,7 +873,7 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "max by (library) (plex_library_items{job=~\"${job:regex}\",instance=~\"${instance:regex}\",server_type=\"plex\"})",
+          "expr": "max by (library) (plex_library_items{job=\"$job\",instance=\"$instance\",server_type=\"plex\"})",
           "format": "time_series",
           "instant": true,
           "legendFormat": "{{library}}",
@@ -928,7 +928,7 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "max by (library) (library_storage_total{job=~\"${job:regex}\",instance=~\"${instance:regex}\",server_type=\"plex\"})",
+          "expr": "max by (library) (library_storage_total{job=\"$job\",instance=\"$instance\",server_type=\"plex\"})",
           "format": "time_series",
           "instant": true,
           "legendFormat": "{{library}}",
@@ -983,7 +983,7 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "max by (library) (library_duration_total{job=~\"${job:regex}\",instance=~\"${instance:regex}\",server_type=\"plex\"}) / 1000",
+          "expr": "max by (library) (library_duration_total{job=\"$job\",instance=\"$instance\",server_type=\"plex\"}) / 1000",
           "format": "time_series",
           "instant": true,
           "legendFormat": "{{library}}",
@@ -1052,7 +1052,7 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "max by (session, user, state) (plex_session_state{job=~\"${job:regex}\",instance=~\"${instance:regex}\",server_type=\"plex\"})",
+          "expr": "max by (session, user, state) (plex_session_state{job=\"$job\",instance=\"$instance\",server_type=\"plex\"})",
           "format": "table",
           "instant": true,
           "legendFormat": "",
@@ -1117,7 +1117,7 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "sum by (user) (rate(plex_session_play_seconds_total{job=~\"${job:regex}\",instance=~\"${instance:regex}\",server_type=\"plex\"}[$__rate_interval]))",
+          "expr": "sum by (user) (rate(plex_session_play_seconds_total{job=\"$job\",instance=\"$instance\",server_type=\"plex\"}[$__rate_interval]))",
           "format": "time_series",
           "instant": false,
           "legendFormat": "{{user}}",
@@ -1186,7 +1186,7 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "max by (session, user, location) (plex_session_bitrate_kbps{job=~\"${job:regex}\",instance=~\"${instance:regex}\",server_type=\"plex\"})",
+          "expr": "max by (session, user, location) (plex_session_bitrate_kbps{job=\"$job\",instance=\"$instance\",server_type=\"plex\"})",
           "format": "time_series",
           "instant": false,
           "legendFormat": "bitrate {{user}} / {{location}}",
@@ -1200,7 +1200,7 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "max by (session, user, location) (plex_session_bandwidth_kbps{job=~\"${job:regex}\",instance=~\"${instance:regex}\",server_type=\"plex\"})",
+          "expr": "max by (session, user, location) (plex_session_bandwidth_kbps{job=\"$job\",instance=\"$instance\",server_type=\"plex\"})",
           "format": "time_series",
           "instant": false,
           "legendFormat": "bandwidth {{user}} / {{location}}",
@@ -1269,7 +1269,7 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "max by (session, user, decode, encode) (plex_session_video_transcode{job=~\"${job:regex}\",instance=~\"${instance:regex}\",server_type=\"plex\"})",
+          "expr": "max by (session, user, decode, encode) (plex_session_video_transcode{job=\"$job\",instance=\"$instance\",server_type=\"plex\"})",
           "format": "table",
           "instant": true,
           "legendFormat": "",
@@ -1335,7 +1335,7 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "sum by (transcode_type) (rate(play_seconds_total{job=~\"${job:regex}\",instance=~\"${instance:regex}\",server_type=\"plex\"}[$__rate_interval]))",
+          "expr": "sum by (transcode_type) (rate(play_seconds_total{job=\"$job\",instance=\"$instance\",server_type=\"plex\"}[$__rate_interval]))",
           "format": "time_series",
           "instant": true,
           "legendFormat": "{{transcode_type}}",
@@ -1390,7 +1390,7 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "sum by (subtitle_action) (rate(play_seconds_total{job=~\"${job:regex}\",instance=~\"${instance:regex}\",server_type=\"plex\"}[$__rate_interval]))",
+          "expr": "sum by (subtitle_action) (rate(play_seconds_total{job=\"$job\",instance=\"$instance\",server_type=\"plex\"}[$__rate_interval]))",
           "format": "time_series",
           "instant": true,
           "legendFormat": "{{subtitle_action}}",
@@ -1464,10 +1464,10 @@
           "uid": "${datasource}"
         },
         "query": {
-          "query": "label_values(server_info{job=~\"${job:regex}\",server_type=\"plex\"}, instance)",
+          "query": "label_values(server_info{job=\"$job\",server_type=\"plex\"}, instance)",
           "refId": "StandardVariableQuery"
         },
-        "definition": "label_values(server_info{job=~\"${job:regex}\",server_type=\"plex\"}, instance)",
+        "definition": "label_values(server_info{job=\"$job\",server_type=\"plex\"}, instance)",
         "refresh": 1,
         "sort": 1,
         "multi": false,

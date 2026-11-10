@@ -10,8 +10,11 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 OUTPUT = ROOT / "grafana" / "plex-exporter.json"
 DATASOURCE = {"type": "prometheus", "uid": "${datasource}"}
-BASE = 'job=~"${job:regex}",instance=~"${instance:regex}",server_type="plex"'
-TARGET = 'job=~"${job:regex}",instance=~"${instance:regex}"'
+# Job and instance are single-select variables. Let the Prometheus data
+# source escape label strings; generic regex formatting emits backslashes
+# that are not valid escapes inside a quoted PromQL string.
+BASE = 'job="$job",instance="$instance",server_type="plex"'
+TARGET = 'job="$job",instance="$instance"'
 
 
 def target(expr: str, legend: str = "", instant: bool = False, ref: str = "A") -> dict:
@@ -139,7 +142,7 @@ def add(*args, **kwargs):
 add("Status", "row", 0, 0, 24, 1)
 add("Exporter scrape", "stat", 0, 1, 4, 4,
     "Prometheus can reach the exporter. This does not prove Plex is reachable.",
-    [target('min(up{job=~"${job:regex}",instance=~"${instance:regex}"})', instant=True)], "none",
+    [target('min(up{job="$job",instance="$instance"})', instant=True)], "none",
     thresholds=[{"color": "red", "value": None}, {"color": "green", "value": 1}])
 panels[-1]["fieldConfig"]["defaults"]["mappings"] = [{"type": "value", "options": {
     "0": {"text": "Down", "color": "red"}, "1": {"text": "Up", "color": "green"}}}]
@@ -161,7 +164,7 @@ add("Stale session data", "stat", 16, 1, 4, 4,
     thresholds=[{"color": "green", "value": None}, {"color": "orange", "value": 120}, {"color": "red", "value": 300}])
 add("Exporter uptime", "stat", 20, 1, 4, 4,
     "Time since this exporter process started.",
-    [target('time() - max(process_start_time_seconds{job=~"${job:regex}",instance=~"${instance:regex}"})', instant=True)], "s")
+    [target('time() - max(process_start_time_seconds{job="$job",instance="$instance"})', instant=True)], "s")
 
 add("Session state", "timeseries", 0, 5, 12, 7,
     "Plex's current state for each tracked stream. Counts drop when a stream disappears from /status/sessions.",
@@ -232,7 +235,7 @@ dashboard = {
     "timezone": "browser",
     "editable": True,
     "schemaVersion": 39,
-    "version": 2,
+    "version": 3,
     "graphTooltip": 1,
     "refresh": "1m",
     "time": {"from": "now-6h", "to": "now"},
@@ -243,7 +246,7 @@ dashboard = {
     "templating": {"list": [
         {"name": "datasource", "label": "Prometheus", "type": "datasource", "query": "prometheus", "refresh": 1, "options": [], "current": {}},
         variable("job", "Job", 'label_values(server_info{server_type="plex"}, job)'),
-        variable("instance", "Instance", 'label_values(server_info{job=~"${job:regex}",server_type="plex"}, instance)'),
+        variable("instance", "Instance", 'label_values(server_info{job="$job",server_type="plex"}, instance)'),
         {"name": "scrape_interval", "label": "Scrape interval", "type": "interval", "query": "15s,30s,1m,2m,5m", "auto": False, "refresh": 2, "options": [], "current": {"text": "1m", "value": "1m"}},
     ]},
 }
