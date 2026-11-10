@@ -39,6 +39,110 @@ func (f *fakePlexClient) GetTranscodeSessions() (ttPlex.TranscodeSessionsRespons
 	return ttPlex.TranscodeSessionsResponse{}, errors.New("not implemented")
 }
 
+func TestListenerReconcilesMissedPlaybackEventsWithoutReconnect(t *testing.T) {
+	server := &Server{}
+	store := NewSessions(context.Background(), server)
+	defer store.Close()
+	store.Update("missed-stop", statePlaying, &ttPlex.Metadata{SessionKey: "missed-stop"}, nil)
+	current := ttPlex.CurrentSessions{}
+	current.MediaContainer.Metadata = []ttPlex.Metadata{
+		{SessionKey: "missed-pause", Player: ttPlex.Player{State: "paused"}},
+	}
+	listener := &plexListener{
+		activeSessions: store,
+		conn:           &fakePlexClient{sessions: current},
+		log:            log.NewNopLogger(),
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- listener.waitForDisconnect(ctx, make(chan error), time.Millisecond) }()
+	defer func() {
+		cancel()
+		select {
+		case err := <-done:
+			if err != nil {
+				t.Errorf("reconciliation shutdown: %v", err)
+			}
+		case <-time.After(time.Second):
+			t.Error("reconciliation did not stop after cancellation")
+		}
+	}()
+
+	deadline := time.Now().Add(time.Second)
+	for {
+		store.mtx.Lock()
+		stopped := store.sessions["missed-stop"]
+		paused := store.sessions["missed-pause"]
+		if stopped.state == stateStopped && paused.state == statePaused {
+			// Simulate the retention interval elapsing. Reconciliation must
+			// leave the stopped session eligible for normal pruning.
+			stopped.lastUpdate = time.Now().Add(-2 * sessionTimeout)
+			store.sessions["missed-stop"] = stopped
+			store.mtx.Unlock()
+			break
+		}
+		store.mtx.Unlock()
+		if time.Now().After(deadline) {
+			t.Fatal("missed stop and pause events were not reconciled")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	store.pruneOldSessions()
+	store.mtx.Lock()
+	defer store.mtx.Unlock()
+	if _, exists := store.sessions["missed-stop"]; exists {
+		t.Fatal("stale playback survived reconciliation and pruning")
+	}
+	if store.sessions["missed-pause"].playStarted.IsZero() {
+		t.Fatal("current paused session was not seeded")
+	}
+}
+
+func TestListenerPeriodicReconcilePreservesSessionsOnFailure(t *testing.T) {
+	store := NewSessions(context.Background(), &Server{})
+	defer store.Close()
+	store.Update("still-playing", statePlaying, &ttPlex.Metadata{SessionKey: "still-playing"}, nil)
+	requests := make(chan struct{}, 1)
+	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusServiceUnavailable)
+		select {
+		case requests <- struct{}{}:
+		default:
+		}
+	}))
+	defer api.Close()
+	client, err := ttPlex.New(api.URL, "test-token")
+	if err != nil {
+		t.Fatal(err)
+	}
+	listener := &plexListener{activeSessions: store, conn: client, log: log.NewNopLogger()}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	disconnected := make(chan error, 1)
+	done := make(chan error, 1)
+	go func() { done <- listener.waitForDisconnect(ctx, disconnected, time.Millisecond) }()
+	select {
+	case <-requests:
+	case <-time.After(time.Second):
+		t.Fatal("no periodic session request")
+	}
+	// Wait for the in-flight failed request to finish and the loop to return.
+	disconnected <- ErrListenerClosed
+	select {
+	case err := <-done:
+		if !errors.Is(err, ErrListenerClosed) {
+			t.Fatalf("disconnect result = %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("reconciliation did not stop after disconnect")
+	}
+	store.mtx.Lock()
+	defer store.mtx.Unlock()
+	if got := store.sessions["still-playing"].state; got != statePlaying {
+		t.Fatalf("failed session request changed playback state to %q", got)
+	}
+}
+
 // fakePlex implements minimal methods used by plexListener for richer tests.
 type fakePlex struct {
 	sessions     ttPlex.CurrentSessions
@@ -314,6 +418,7 @@ func TestSyncCurrentSessionsSeedsExistingPlayback(t *testing.T) {
 			Title:            "Existing Movie",
 			Type:             "movie",
 			User:             ttPlex.User{Title: "viewer"},
+			Player:           ttPlex.Player{State: "playing"},
 		},
 		{
 			SessionKey: "already-paused",

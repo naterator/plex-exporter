@@ -62,7 +62,7 @@ func TestCollectEmitsTranscodeTypeLabel(t *testing.T) {
 	s.sessions[sid] = ss
 
 	// Collect metrics
-	ch := make(chan prometheus.Metric, 10)
+	ch := make(chan prometheus.Metric, 64)
 	s.Collect(ch)
 	close(ch)
 
@@ -122,7 +122,7 @@ func TestCollectEmitsSubtitleActionBurn(t *testing.T) {
 	sid := "session-sub-burn"
 	s.sessions[sid] = ss
 
-	ch := make(chan prometheus.Metric, 10)
+	ch := make(chan prometheus.Metric, 64)
 	s.Collect(ch)
 	close(ch)
 
@@ -268,7 +268,7 @@ func TestSessionsCollectWithUnknownLibrary(t *testing.T) {
 	s.Update("test-session", statePlaying, &ss.session, &ss.media)
 
 	// Collect metrics
-	ch := make(chan prometheus.Metric, 10)
+	ch := make(chan prometheus.Metric, 64)
 	s.Collect(ch)
 	close(ch)
 
@@ -342,19 +342,30 @@ func TestSessionsCollectSkipsSessionsWithoutPlayStarted(t *testing.T) {
 	s.sessions["skipped-session"] = ss
 
 	// Collect metrics
-	ch := make(chan prometheus.Metric, 10)
+	ch := make(chan prometheus.Metric, 64)
 	s.Collect(ch)
 	close(ch)
 
-	// Should only get the extrapolated bytes metric, no play metrics
-	metricCount := 0
-	for range ch {
-		metricCount++
+	// Current-session diagnostics are still emitted for a record without a
+	// playStarted timestamp, but the legacy play counters must remain absent.
+	foundEstimated := false
+	foundLegacyPlay := false
+	foundLegacyDuration := false
+	for metric := range ch {
+		switch metric.Desc().String() {
+		case metrics.MetricEstimatedTransmittedBytesTotal.String():
+			foundEstimated = true
+		case metrics.MetricPlayCountDesc.String():
+			foundLegacyPlay = true
+		case metrics.MetricPlaySecondsTotalDesc.String():
+			foundLegacyDuration = true
+		}
 	}
-
-	// Should only have 1 metric (extrapolated bytes), not play metrics
-	if metricCount != 1 {
-		t.Fatalf("expected 1 metric (extrapolated bytes only), got %d", metricCount)
+	if !foundEstimated {
+		t.Fatal("expected estimated transmitted bytes metric")
+	}
+	if foundLegacyPlay || foundLegacyDuration {
+		t.Fatalf("legacy play metrics unexpectedly emitted: plays=%t duration=%t", foundLegacyPlay, foundLegacyDuration)
 	}
 }
 
@@ -404,7 +415,7 @@ func TestSessionsCollectWithResolvedLibrary(t *testing.T) {
 	s.mtx.Unlock()
 
 	// Collect metrics
-	ch := make(chan prometheus.Metric, 10)
+	ch := make(chan prometheus.Metric, 64)
 	s.Collect(ch)
 	close(ch)
 
@@ -817,7 +828,7 @@ func TestSessionsCollectEmitsPlayAndPlayDuration(t *testing.T) {
 	}
 	s.mtx.Unlock()
 
-	ch := make(chan prometheus.Metric, 10)
+	ch := make(chan prometheus.Metric, 64)
 	s.Collect(ch)
 	close(ch)
 
@@ -1182,7 +1193,7 @@ func TestIntegration_RealWorldMetrics(t *testing.T) {
 
 			desc := metric.Desc().String()
 
-			if strings.Contains(desc, "plays_total") {
+			if desc == metrics.MetricPlayCountDesc.String() {
 				playMetrics++
 				// Check for expected users in labels
 				for _, label := range dto.Label {
@@ -1192,7 +1203,7 @@ func TestIntegration_RealWorldMetrics(t *testing.T) {
 						}
 					}
 				}
-			} else if strings.Contains(desc, "play_seconds_total") {
+			} else if desc == metrics.MetricPlaySecondsTotalDesc.String() {
 				durationMetrics++
 			}
 		}
@@ -1302,19 +1313,21 @@ func TestSessionsDescribeAndCollect(t *testing.T) {
 
 	s := NewSessions(ctx, srv)
 	// Describe
-	dch := make(chan *prometheus.Desc, 3)
-	s.Describe(dch)
-	close(dch)
+	dch := make(chan *prometheus.Desc)
+	go func() {
+		s.Describe(dch)
+		close(dch)
+	}()
 	descs := 0
 	for range dch {
 		descs++
 	}
-	if descs != 3 {
-		t.Fatalf("expected 3 descriptors, got %d", descs)
+	if descs != 10 {
+		t.Fatalf("expected 10 descriptors, got %d", descs)
 	}
 
 	// Collect should emit at least the estimated transmitted bytes metric
-	mch := make(chan prometheus.Metric, 10)
+	mch := make(chan prometheus.Metric, 64)
 	s.Collect(mch)
 	close(mch)
 
@@ -1918,10 +1931,13 @@ func TestCollectKeepsPlayerLabelsWhenSessionMediaIsMissing(t *testing.T) {
 	media := ttPlex.Metadata{RatingKey: "movie-1", Type: "movie", Title: "Movie"}
 	store.Update("partial-session", statePlaying, &playSession, &media)
 
-	metricsChannel := make(chan prometheus.Metric, 10)
+	metricsChannel := make(chan prometheus.Metric, 64)
 	store.Collect(metricsChannel)
 	close(metricsChannel)
 	for metric := range metricsChannel {
+		if metric.Desc().String() != metrics.MetricPlayCountDesc.String() {
+			continue
+		}
 		_, labels, err := readMetric(metric)
 		if err != nil {
 			t.Fatalf("readMetric: %v", err)

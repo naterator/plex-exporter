@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"os"
@@ -146,10 +147,13 @@ func main() {
 
 	metrics.Register(server)
 
-	mux := http.NewServeMux()
-	mux.Handle("/metrics", promhttp.Handler())
+	mux := newMetricsMux(server)
+	listenAddr := os.Getenv("LISTEN_ADDR")
+	if listenAddr == "" {
+		listenAddr = MetricsServerAddr
+	}
 	metricsServer := http.Server{
-		Addr:         MetricsServerAddr,
+		Addr:         listenAddr,
 		Handler:      mux,
 		ReadTimeout:  5 * time.Second,
 		WriteTimeout: 10 * time.Second,
@@ -158,7 +162,7 @@ func main() {
 
 	metricsErrCh := make(chan error, 1)
 	go func() {
-		logger.Info("starting metrics server on " + MetricsServerAddr)
+		logger.Info("starting metrics server on " + listenAddr)
 		metricsErrCh <- metricsServer.ListenAndServe()
 	}()
 
@@ -194,6 +198,31 @@ func main() {
 	// released; avoid relying on deferred calls that won't run after os.Exit
 	shutdownCancel()
 	os.Exit(exitCode)
+}
+
+type healthStatus interface {
+	Healthy() bool
+	Ready() bool
+}
+
+func newMetricsMux(server healthStatus) *http.ServeMux {
+	mux := http.NewServeMux()
+	mux.Handle("/metrics", promhttp.Handler())
+	probe := func(check func() bool) http.HandlerFunc {
+		return func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			w.Header().Set("Cache-Control", "no-store")
+			status := "ok"
+			if !check() {
+				status = "unavailable"
+				w.WriteHeader(http.StatusServiceUnavailable)
+			}
+			_ = json.NewEncoder(w).Encode(map[string]string{"status": status})
+		}
+	}
+	mux.HandleFunc("/healthz", probe(server.Healthy))
+	mux.HandleFunc("/readyz", probe(server.Ready))
+	return mux
 }
 
 func listenWithRetry(

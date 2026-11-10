@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"os"
 	"sort"
 	"strings"
 	"sync"
@@ -22,6 +21,8 @@ var (
 	ErrListenerClosed   = errors.New("plex websocket listener closed unexpectedly")
 	ErrServerClosed     = errors.New("plex server is closed")
 )
+
+const sessionReconcileInterval = 30 * time.Second
 
 // Retry/backoff tuning variables. These are exported so callers (for
 // example `cmd/plex-exporter/main.go` or tests) can adjust them
@@ -114,24 +115,13 @@ func (s *Server) Listen(ctx context.Context, logger log.Logger) error {
 	s.mtx.Unlock()
 	defer func() {
 		cancelListener()
+		recordWebsocketState(s, false)
 		s.mtx.Lock()
 		if s.listener == listener {
 			s.listener = nil
 			s.listenerCancel = nil
 		}
 		s.mtx.Unlock()
-	}()
-
-	// forward context completion to timothystewart6/go-plex-client
-	ctrlC := make(chan os.Signal, 1)
-	bridgeDone := make(chan struct{})
-	defer close(bridgeDone)
-	go func() {
-		select {
-		case <-listenCtx.Done():
-			close(ctrlC)
-		case <-bridgeDone:
-		}
 	}()
 
 	doneChan := make(chan error, 1)
@@ -184,7 +174,7 @@ func (s *Server) Listen(ctx context.Context, logger log.Logger) error {
 
 	// The dependency manages one websocket connection. Listen returns when it
 	// closes so the process-level retry loop can reconnect with backoff.
-	conn.SubscribeToNotifications(events, ctrlC, onError)
+	conn.SubscribeToNotificationsWithContext(listenCtx, events, onError)
 	select { // SubscribeToNotifications doesn't return error directly, so we read one from channel without blocking.
 	case err, ok := <-doneChan:
 		return listenerResult(listenCtx, err, ok)
@@ -194,12 +184,32 @@ func (s *Server) Listen(ctx context.Context, logger log.Logger) error {
 	if err := listener.syncCurrentSessions(); err != nil {
 		logger.Warn("could not seed active sessions after websocket connection", zap.Error(err))
 	}
+	recordWebsocketState(s, true)
 
 	serverName, serverID := s.identity()
 	logger.Info("Successfully connected", zap.String("machineID", serverID), zap.String("server", serverName))
 
-	listenerErr, channelOpen := <-doneChan
-	return listenerResult(listenCtx, listenerErr, channelOpen)
+	return listener.waitForDisconnect(listenCtx, doneChan, sessionReconcileInterval)
+}
+
+// WebSocket stop notifications can be lost without the connection closing.
+// Reconcile against Plex periodically so missing events cannot leave playback
+// time accumulating forever. Failed requests leave the current state intact.
+func (l *plexListener) waitForDisconnect(ctx context.Context, done <-chan error, interval time.Duration) error {
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return nil
+		case err, ok := <-done:
+			return listenerResult(ctx, err, ok)
+		case <-ticker.C:
+			if err := l.syncCurrentSessions(); err != nil {
+				l.log.Warn("could not reconcile active Plex sessions", zap.Error(err))
+			}
+		}
+	}
 }
 
 func (l *plexListener) syncCurrentSessions() error {
@@ -208,6 +218,7 @@ func (l *plexListener) syncCurrentSessions() error {
 	}
 	observedAt := time.Now()
 	current, err := l.conn.GetSessions()
+	recordServerOperation(l.server, "sessions", err)
 	if err != nil {
 		return fmt.Errorf("fetch current sessions: %w", err)
 	}
@@ -312,6 +323,7 @@ func (l *plexListener) onTranscodeUpdateHandler(c plex.NotificationContainer) {
 		}
 
 		matched := l.activeSessions.TrySetTranscodeType(ts.Key, kind)
+		l.activeSessions.SetTranscodeHardware(ts.Key, ts.TranscodeHwRequested)
 		subMatched := !hasSubtitleAction
 		if hasSubtitleAction {
 			subMatched = l.activeSessions.TrySetSubtitleAction(ts.Key, subtitle)
@@ -332,6 +344,7 @@ func (l *plexListener) onTranscodeUpdateHandler(c plex.NotificationContainer) {
 					}
 				}
 				matched = l.activeSessions.TrySetTranscodeType(ts.Key, kind)
+				l.activeSessions.SetTranscodeHardware(ts.Key, ts.TranscodeHwRequested)
 				if hasSubtitleAction {
 					subMatched = l.activeSessions.TrySetSubtitleAction(ts.Key, subtitle)
 				}
@@ -474,6 +487,7 @@ func (l *plexListener) onTranscodeUpdateHandler(c plex.NotificationContainer) {
 
 		if !matched {
 			l.activeSessions.SetTranscodeType(ts.Key, kind)
+			l.activeSessions.SetTranscodeHardware(ts.Key, ts.TranscodeHwRequested)
 			if !hasSubtitleAction {
 				l.activeSessions.SetSubtitleAction(ts.Key, "none")
 			}
@@ -520,6 +534,7 @@ func (l *plexListener) onPlaying(c plex.NotificationContainer) error {
 	}
 
 	sessions, err := l.conn.GetSessions()
+	recordServerOperation(l.server, "sessions", err)
 	if err != nil {
 		return fmt.Errorf("error fetching sessions: %w", err)
 	}
@@ -553,18 +568,27 @@ func (l *plexListener) onPlaying(c plex.NotificationContainer) error {
 			continue
 		}
 
-		// Fetch metadata with retries in case the server hasn't populated it yet.
+		// Reuse metadata already attached to this session when the rating key
+		// is unchanged. Notifications can arrive several times per second and
+		// fetching the same library item for every one made the exporter both
+		// slow and needlessly dependent on Plex's metadata endpoint.
 		var metadata plex.MediaMetadata
-		var metaErr error
-		for attempt := 1; attempt <= MetadataMaxRetries; attempt++ {
-			metadata, metaErr = l.conn.GetMetadata(n.RatingKey)
-			if metaErr == nil && len(metadata.MediaContainer.Metadata) > 0 {
-				break
-			}
-			// if this was the last attempt break and we'll log below
-			if attempt < MetadataMaxRetries {
-				backoff := MetadataBaseDelay * (time.Duration(1) << (attempt - 1))
-				time.Sleep(backoff)
+		metaErr := error(nil)
+		if cached, ok := l.activeSessions.cachedMetadata(n.SessionKey, n.RatingKey); ok {
+			metadata.MediaContainer.Metadata = []plex.Metadata{cached}
+		} else {
+			// Fetch metadata with retries in case the server hasn't populated it yet.
+			for attempt := 1; attempt <= MetadataMaxRetries; attempt++ {
+				metadata, metaErr = l.conn.GetMetadata(n.RatingKey)
+				recordServerOperation(l.server, "metadata_fetch", metaErr)
+				if metaErr == nil && len(metadata.MediaContainer.Metadata) > 0 {
+					break
+				}
+				// if this was the last attempt break and we'll log below
+				if attempt < MetadataMaxRetries {
+					backoff := MetadataBaseDelay * (time.Duration(1) << (attempt - 1))
+					time.Sleep(backoff)
+				}
 			}
 		}
 

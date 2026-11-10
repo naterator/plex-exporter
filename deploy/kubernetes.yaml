@@ -1,0 +1,74 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: plex-exporter
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: plex-exporter
+  template:
+    metadata:
+      labels:
+        app: plex-exporter
+    spec:
+      containers:
+        - name: plex-exporter
+          image: ghcr.io/naterator/plex-exporter:latest
+          ports:
+            - name: metrics
+              containerPort: 9000
+          env:
+            - name: PLEX_SERVER
+              valueFrom:
+                secretKeyRef:
+                  name: plex-exporter
+                  key: server
+            - name: PLEX_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: plex-exporter
+                  key: token
+          startupProbe:
+            httpGet:
+              path: /healthz
+              port: metrics
+            periodSeconds: 5
+            failureThreshold: 12
+          # Keep metrics available during a Plex outage. /readyz separately
+          # reports whether the exporter has fresh session data from Plex.
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: metrics
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: metrics
+            periodSeconds: 15
+          resources:
+            requests:
+              cpu: 10m
+              memory: 32Mi
+            limits:
+              cpu: 500m
+              memory: 256Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+            capabilities:
+              drop: [ALL]
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: plex-exporter
+spec:
+  selector:
+    app: plex-exporter
+  ports:
+    - name: metrics
+      port: 9000
+      targetPort: metrics

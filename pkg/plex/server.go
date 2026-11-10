@@ -27,6 +27,7 @@ import (
 const (
 	defaultLibraryRefreshInterval         = 15 * time.Minute
 	defaultLibraryMetadataRefreshInterval = 15 * time.Minute
+	startupMetadataRetryMax               = 5 * time.Minute
 	maxLibraryRefreshMinutes              = int64((1<<63 - 1) / int64(time.Minute))
 )
 
@@ -63,6 +64,7 @@ type Server struct {
 	listenerCancel func()
 	eventSessions  *sessions
 	closed         bool
+	health         healthState
 
 	mtx       sync.RWMutex
 	refreshMu sync.Mutex
@@ -86,6 +88,9 @@ type Server struct {
 	// nextLibraryMetadataRefresh is guarded by refreshMu. Advancing it before an
 	// attempt also rate-limits failures instead of retrying every five seconds.
 	nextLibraryMetadataRefresh time.Time
+	// startupMetadataRetryCount is guarded by refreshMu. It is reset after
+	// metadata identity is successfully refreshed.
+	startupMetadataRetryCount int
 	// Debug enables verbose debug logging when true.
 	Debug bool
 
@@ -201,6 +206,7 @@ func NewServer(serverURL, token string) (*Server, error) {
 		Token: client.Token,
 
 		Client:          client,
+		health:          newHealthState(),
 		lastBandwidthAt: int(time.Now().Unix()),
 	}
 
@@ -254,18 +260,31 @@ func NewServer(serverURL, token string) (*Server, error) {
 			zap.Int("minutes", int(server.LibraryMetadataRefreshInterval.Minutes())))
 	}
 
-	// Perform a fast, lightweight refresh at startup to populate basic
-	// server and library metadata without running expensive per-library
-	// item counts. Defer the expensive full refresh to run in the
-	// background after a short delay to reduce startup memory/CPU spikes.
-	if err := server.RefreshLight(); err != nil {
-		return nil, err
-	}
-
 	// Channel closed when the initial background full refresh completes or is
 	// canceled during shutdown.
 	server.fullRefreshDone = make(chan struct{})
 	server.refreshStop = make(chan struct{})
+
+	// Perform a fast, lightweight refresh at startup to populate basic
+	// server and library metadata without running expensive per-library
+	// item counts. A transient Plex outage must not take the exporter down:
+	// the periodic refresh below retries metadata with a bounded backoff while
+	// the metrics and probe endpoints remain available. Authentication and
+	// certificate/configuration errors are returned immediately so they are
+	// actionable; a malformed body is treated as transient when it may be the
+	// result of a restarting Plex process or an intermediary.
+	if err := server.RefreshLight(); err != nil {
+		if !isTransientPlexError(err) {
+			return nil, err
+		}
+		packageLogger().Warn("Plex is temporarily unavailable; starting in degraded mode",
+			zap.Error(err))
+	}
+
+	// Session polling is independent of the WebSocket listener and library
+	// refresh workers. Start it only after its stop and wait channels exist so
+	// shutdown can always wait for an in-flight poll.
+	server.startSessionPolling()
 
 	// Schedule the full refresh after 15s + small jitter.
 	server.refreshWG.Add(1)
@@ -393,9 +412,7 @@ func (s *Server) Refresh() error {
 	// Keep current server metrics on the five-second loop, but discover library
 	// metadata only when its independent interval is due. Plex may scan tens of
 	// MiB of database pages to answer /media/providers?includeStorage=1.
-	if err := s.refreshLibraryMetadataIfDue(time.Now()); err != nil {
-		return err
-	}
+	metadataErr := s.refreshLibraryMetadataIfDue(time.Now())
 	if err := s.refreshServerInfo(); err != nil {
 		packageLogger().Debug("server info refresh failed", zap.Error(err))
 	}
@@ -450,7 +467,7 @@ func (s *Server) Refresh() error {
 		packageLogger().Debug("bandwidth statistics refresh failed", zap.Error(err))
 	}
 
-	return nil
+	return metadataErr
 }
 
 // RefreshLight updates due server metadata and inexpensive metrics without
@@ -466,17 +483,24 @@ func (s *Server) RefreshLight() error {
 // refreshLight is the lock-free implementation shared by Refresh and
 // RefreshLight. The caller must hold refreshMu when using it.
 func (s *Server) refreshLight() error {
-	if err := s.refreshLibraryMetadataIfDue(time.Now()); err != nil {
-		return err
-	}
+	metadataErr := s.refreshLibraryMetadataIfDue(time.Now())
 
 	// These endpoints are best effort for the light refresh. Refresh performs
 	// the same calls with normal error propagation because it is the full
 	// metrics refresh path.
-	_ = s.refreshServerInfo()
-	_ = s.refreshResources()
+	serverErr := s.refreshServerInfo()
+	resourceErr := s.refreshResources()
 
-	return nil
+	// Do not hide an authentication, URL, or certificate error from a cheap
+	// endpoint merely because metadata is also unavailable. Transient failures
+	// remain degraded and are retried by the normal refresh loop.
+	for _, err := range []error{metadataErr, serverErr, resourceErr} {
+		if err != nil && !isTransientPlexError(err) {
+			return err
+		}
+	}
+
+	return metadataErr
 }
 
 // refreshLibraryMetadataIfDue refreshes the library inventory at most once per
@@ -485,14 +509,46 @@ func (s *Server) refreshLight() error {
 // retry storm. A zero interval preserves the opt-out behavior and refreshes on
 // every call.
 func (s *Server) refreshLibraryMetadataIfDue(now time.Time) error {
-	if s.LibraryMetadataRefreshInterval > 0 {
-		if !s.nextLibraryMetadataRefresh.IsZero() && now.Before(s.nextLibraryMetadataRefresh) {
-			return nil
-		}
-		s.nextLibraryMetadataRefresh = now.Add(s.LibraryMetadataRefreshInterval)
+	if !s.nextLibraryMetadataRefresh.IsZero() && now.Before(s.nextLibraryMetadataRefresh) {
+		return nil
 	}
 
-	return s.refreshLibraryMetadata()
+	if s.LibraryMetadataRefreshInterval > 0 {
+		s.nextLibraryMetadataRefresh = now.Add(s.LibraryMetadataRefreshInterval)
+	} else {
+		// A zero interval normally means no metadata cache. During degraded
+		// startup it is still useful to install a retry deadline so the five
+		// second metrics loop does not hammer an unavailable Plex server.
+		s.nextLibraryMetadataRefresh = time.Time{}
+	}
+
+	err := s.refreshLibraryMetadata()
+	if err == nil {
+		// Once identity has been populated, resume the configured interval.
+		s.startupMetadataRetryCount = 0
+		if s.LibraryMetadataRefreshInterval == 0 {
+			s.nextLibraryMetadataRefresh = time.Time{}
+		}
+		return nil
+	}
+
+	// The initial metadata request is the dependency for identity and library
+	// readiness. Retry transient failures with exponential backoff capped at a
+	// small fixed maximum; permanent failures are surfaced by NewServer.
+	_, serverID := s.identity()
+	if serverID == "" && isTransientPlexError(err) {
+		s.startupMetadataRetryCount++
+		retry := startupMetadataRetry
+		for attempt := 1; attempt < s.startupMetadataRetryCount; attempt++ {
+			retry *= 2
+			if retry >= startupMetadataRetryMax {
+				retry = startupMetadataRetryMax
+				break
+			}
+		}
+		s.nextLibraryMetadataRefresh = now.Add(retry)
+	}
+	return err
 }
 
 // ensureLibraryItemsCount populates lib.ItemsCount using cached values when
@@ -659,7 +715,9 @@ func (s *Server) refreshLibraryMetadata() error {
 		} `json:"MediaContainer"`
 	}{}
 
-	if err := s.Client.Get("/media/providers?includeStorage=1", &container); err != nil {
+	err := s.Client.Get("/media/providers?includeStorage=1", &container)
+	s.recordOperation("library", err)
+	if err != nil {
 		return err
 	}
 
@@ -992,6 +1050,7 @@ func (s *Server) refreshServerInfo() error {
 		} `json:"MediaContainer"`
 	}{}
 	err := s.Client.Get("/", &resp)
+	s.recordOperation("server", err)
 
 	if err != nil {
 		return err
@@ -1027,8 +1086,10 @@ func (s *Server) refreshResources() error {
 
 	// This is a paid feature and API may not be available
 	if errors.Is(err, ErrNotFound) {
+		s.recordUnsupportedOperation("resources")
 		return nil
 	}
+	s.recordOperation("resources", err)
 
 	if err != nil {
 		return err
@@ -1060,8 +1121,10 @@ func (s *Server) refreshBandwidth() error {
 
 	// This is a paid feature and API may not be available
 	if errors.Is(err, ErrNotFound) {
+		s.recordUnsupportedOperation("bandwidth")
 		return nil
 	}
+	s.recordOperation("bandwidth", err)
 
 	if err != nil {
 		return err
@@ -1131,6 +1194,10 @@ func (s *Server) identity() (name, id string) {
 }
 
 func (s *Server) Describe(ch chan<- *prometheus.Desc) {
+	describeHealth(ch)
+	for _, desc := range metrics.SessionDescs() {
+		ch <- desc
+	}
 	ch <- metrics.MetricsLibraryDurationTotalDesc
 	ch <- metrics.MetricsLibraryStorageTotalDesc
 	ch <- metrics.MetricsLibraryItemsDesc
@@ -1145,6 +1212,8 @@ func (s *Server) Describe(ch chan<- *prometheus.Desc) {
 }
 
 func (s *Server) Collect(ch chan<- prometheus.Metric) {
+	s.collectHealth(ch)
+
 	s.mtx.RLock()
 	libraries := make([]Library, 0, len(s.libraries))
 	for _, library := range s.libraries {
@@ -1204,7 +1273,11 @@ func (s *Server) Collect(ch chan<- prometheus.Metric) {
 	ch <- metrics.MediaPhotos(photoCount, "plex", serverName, serverID)
 	ch <- metrics.MediaOtherVideos(otherVideoCount, "plex", serverName, serverID)
 
-	if eventSessions != nil {
+	// Avoid creating a second set of session series with empty server labels
+	// while a degraded startup is still waiting for Plex identity. Health and
+	// operation diagnostics above intentionally remain available during this
+	// window.
+	if eventSessions != nil && serverID != "" {
 		eventSessions.Collect(ch)
 	}
 }

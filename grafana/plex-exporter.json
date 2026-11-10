@@ -1,0 +1,1493 @@
+{
+  "id": null,
+  "uid": "plex-exporter-overview",
+  "title": "Plex Exporter",
+  "description": "An operations view for Plex reachability, session state, libraries, traffic, and observed playback.",
+  "tags": [
+    "plex",
+    "prometheus",
+    "plex-exporter"
+  ],
+  "timezone": "browser",
+  "editable": true,
+  "schemaVersion": 39,
+  "version": 2,
+  "graphTooltip": 1,
+  "refresh": "1m",
+  "time": {
+    "from": "now-6h",
+    "to": "now"
+  },
+  "timepicker": {
+    "refresh_intervals": [
+      "30s",
+      "1m",
+      "5m",
+      "15m"
+    ]
+  },
+  "annotations": {
+    "list": []
+  },
+  "links": [],
+  "panels": [
+    {
+      "id": 1,
+      "title": "Status",
+      "type": "row",
+      "gridPos": {
+        "x": 0,
+        "y": 0,
+        "w": 24,
+        "h": 1
+      },
+      "description": "",
+      "collapsed": false,
+      "panels": []
+    },
+    {
+      "id": 2,
+      "title": "Exporter scrape",
+      "type": "stat",
+      "gridPos": {
+        "x": 0,
+        "y": 1,
+        "w": 4,
+        "h": 4
+      },
+      "description": "Prometheus can reach the exporter. This does not prove Plex is reachable.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "editorMode": "code",
+          "expr": "min(up{job=~\"${job:regex}\",instance=~\"${instance:regex}\"})",
+          "format": "time_series",
+          "instant": true,
+          "legendFormat": "",
+          "range": false,
+          "refId": "A",
+          "interval": "$scrape_interval"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none",
+          "noValue": "No samples",
+          "color": {
+            "mode": "palette-classic"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "red",
+                "value": null
+              },
+              {
+                "color": "green",
+                "value": 1
+              }
+            ]
+          },
+          "mappings": [
+            {
+              "type": "value",
+              "options": {
+                "0": {
+                  "text": "Down",
+                  "color": "red"
+                },
+                "1": {
+                  "text": "Up",
+                  "color": "green"
+                }
+              }
+            }
+          ]
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "values": false,
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": ""
+        },
+        "orientation": "auto",
+        "textMode": "auto",
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "auto"
+      }
+    },
+    {
+      "id": 3,
+      "title": "Plex session poll",
+      "type": "stat",
+      "gridPos": {
+        "x": 4,
+        "y": 1,
+        "w": 4,
+        "h": 4
+      },
+      "description": "Whether the latest /status/sessions request succeeded. A successful idle response is healthy.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "editorMode": "code",
+          "expr": "min(plex_operation_success{operation=\"sessions\",job=~\"${job:regex}\",instance=~\"${instance:regex}\"})",
+          "format": "time_series",
+          "instant": true,
+          "legendFormat": "",
+          "range": false,
+          "refId": "A",
+          "interval": "$scrape_interval"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none",
+          "noValue": "No samples",
+          "color": {
+            "mode": "palette-classic"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "red",
+                "value": null
+              },
+              {
+                "color": "green",
+                "value": 1
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "values": false,
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": ""
+        },
+        "orientation": "auto",
+        "textMode": "auto",
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "auto"
+      }
+    },
+    {
+      "id": 4,
+      "title": "WebSocket",
+      "type": "stat",
+      "gridPos": {
+        "x": 8,
+        "y": 1,
+        "w": 4,
+        "h": 4
+      },
+      "description": "Event connection state. Session polling continues independently when the WebSocket is down.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "editorMode": "code",
+          "expr": "plex_websocket_connected{job=~\"${job:regex}\",instance=~\"${instance:regex}\"}",
+          "format": "time_series",
+          "instant": true,
+          "legendFormat": "",
+          "range": false,
+          "refId": "A",
+          "interval": "$scrape_interval"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none",
+          "noValue": "No samples",
+          "color": {
+            "mode": "palette-classic"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "red",
+                "value": null
+              },
+              {
+                "color": "green",
+                "value": 1
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "values": false,
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": ""
+        },
+        "orientation": "auto",
+        "textMode": "auto",
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "auto"
+      }
+    },
+    {
+      "id": 5,
+      "title": "Active streams",
+      "type": "stat",
+      "gridPos": {
+        "x": 12,
+        "y": 1,
+        "w": 4,
+        "h": 4
+      },
+      "description": "Confirmed current sessions. Paused and buffering streams remain active while Plex reports them.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "editorMode": "code",
+          "expr": "sum(plex_sessions{state=~\"playing|paused|buffering\",job=~\"${job:regex}\",instance=~\"${instance:regex}\",server_type=\"plex\"})",
+          "format": "time_series",
+          "instant": true,
+          "legendFormat": "",
+          "range": false,
+          "refId": "A",
+          "interval": "$scrape_interval"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "noValue": "No samples",
+          "color": {
+            "mode": "palette-classic"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "values": false,
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": ""
+        },
+        "orientation": "auto",
+        "textMode": "auto",
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "auto"
+      }
+    },
+    {
+      "id": 6,
+      "title": "Stale session data",
+      "type": "stat",
+      "gridPos": {
+        "x": 16,
+        "y": 1,
+        "w": 4,
+        "h": 4
+      },
+      "description": "Seconds since the last successful session poll. This is the freshness signal for playback data.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "editorMode": "code",
+          "expr": "(time() - max(plex_operation_last_success_timestamp_seconds{operation=\"sessions\",job=~\"${job:regex}\",instance=~\"${instance:regex}\"})) and (max(plex_operation_last_success_timestamp_seconds{operation=\"sessions\",job=~\"${job:regex}\",instance=~\"${instance:regex}\"}) > 0)",
+          "format": "time_series",
+          "instant": true,
+          "legendFormat": "",
+          "range": false,
+          "refId": "A",
+          "interval": "$scrape_interval"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "noValue": "No samples",
+          "color": {
+            "mode": "palette-classic"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "orange",
+                "value": 120
+              },
+              {
+                "color": "red",
+                "value": 300
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "values": false,
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": ""
+        },
+        "orientation": "auto",
+        "textMode": "auto",
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "auto"
+      }
+    },
+    {
+      "id": 7,
+      "title": "Exporter uptime",
+      "type": "stat",
+      "gridPos": {
+        "x": 20,
+        "y": 1,
+        "w": 4,
+        "h": 4
+      },
+      "description": "Time since this exporter process started.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "editorMode": "code",
+          "expr": "time() - max(process_start_time_seconds{job=~\"${job:regex}\",instance=~\"${instance:regex}\"})",
+          "format": "time_series",
+          "instant": true,
+          "legendFormat": "",
+          "range": false,
+          "refId": "A",
+          "interval": "$scrape_interval"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "noValue": "No samples",
+          "color": {
+            "mode": "palette-classic"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "values": false,
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": ""
+        },
+        "orientation": "auto",
+        "textMode": "auto",
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "auto"
+      }
+    },
+    {
+      "id": 8,
+      "title": "Session state",
+      "type": "timeseries",
+      "gridPos": {
+        "x": 0,
+        "y": 5,
+        "w": 12,
+        "h": 7
+      },
+      "description": "Plex's current state for each tracked stream. Counts drop when a stream disappears from /status/sessions.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "editorMode": "code",
+          "expr": "sum by (state) (plex_sessions{job=~\"${job:regex}\",instance=~\"${instance:regex}\",server_type=\"plex\"})",
+          "format": "time_series",
+          "instant": false,
+          "legendFormat": "{{state}}",
+          "range": true,
+          "refId": "A",
+          "interval": "$scrape_interval"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "noValue": "No samples",
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "fillOpacity": 8,
+            "showPoints": "never",
+            "spanNulls": false,
+            "axisCenteredZero": false,
+            "axisPlacement": "auto",
+            "stacking": {
+              "mode": "none",
+              "group": "A"
+            }
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      }
+    },
+    {
+      "id": 9,
+      "title": "Plex request status",
+      "type": "timeseries",
+      "gridPos": {
+        "x": 12,
+        "y": 5,
+        "w": 12,
+        "h": 7
+      },
+      "description": "Success by independent operation. A zero before the first successful request is uninitialized; pair it with the last-success timestamp to distinguish that from a recent failure.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "editorMode": "code",
+          "expr": "min by (operation) (plex_operation_success{job=~\"${job:regex}\",instance=~\"${instance:regex}\"})",
+          "format": "time_series",
+          "instant": false,
+          "legendFormat": "{{operation}}",
+          "range": true,
+          "refId": "A",
+          "interval": "$scrape_interval"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none",
+          "noValue": "No samples",
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "fillOpacity": 8,
+            "showPoints": "never",
+            "spanNulls": false,
+            "axisCenteredZero": false,
+            "axisPlacement": "auto",
+            "stacking": {
+              "mode": "none",
+              "group": "A"
+            }
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      }
+    },
+    {
+      "id": 10,
+      "title": "Server",
+      "type": "row",
+      "gridPos": {
+        "x": 0,
+        "y": 12,
+        "w": 24,
+        "h": 1
+      },
+      "description": "",
+      "collapsed": false,
+      "panels": []
+    },
+    {
+      "id": 11,
+      "title": "Plex server",
+      "type": "table",
+      "gridPos": {
+        "x": 0,
+        "y": 13,
+        "w": 8,
+        "h": 5
+      },
+      "description": "Identity from the last successful server refresh.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "editorMode": "code",
+          "expr": "max by (server, version, platform, platform_version) (server_info{job=~\"${job:regex}\",instance=~\"${instance:regex}\",server_type=\"plex\"})",
+          "format": "table",
+          "instant": true,
+          "legendFormat": "",
+          "range": false,
+          "refId": "A",
+          "interval": "$scrape_interval"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "noValue": "No samples",
+          "color": {
+            "mode": "palette-classic"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "showHeader": true,
+        "cellHeight": "sm",
+        "footer": {
+          "show": false
+        }
+      },
+      "transformations": [
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {
+              "Time": true,
+              "Value": true
+            },
+            "renameByName": {
+              "server": "Server",
+              "version": "Plex version",
+              "platform": "Platform",
+              "platform_version": "Platform version"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "id": 12,
+      "title": "Host utilization",
+      "type": "timeseries",
+      "gridPos": {
+        "x": 8,
+        "y": 13,
+        "w": 8,
+        "h": 5
+      },
+      "description": "Plex host CPU and memory percentages. These are host values, not exporter-container values.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "editorMode": "code",
+          "expr": "host_cpu_util{job=~\"${job:regex}\",instance=~\"${instance:regex}\",server_type=\"plex\"}",
+          "format": "time_series",
+          "instant": false,
+          "legendFormat": "CPU",
+          "range": true,
+          "refId": "A",
+          "interval": "$scrape_interval"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "editorMode": "code",
+          "expr": "host_mem_util{job=~\"${job:regex}\",instance=~\"${instance:regex}\",server_type=\"plex\"}",
+          "format": "time_series",
+          "instant": false,
+          "legendFormat": "Memory",
+          "range": true,
+          "refId": "B",
+          "interval": "$scrape_interval"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "noValue": "No samples",
+          "color": {
+            "mode": "palette-classic"
+          },
+          "max": 100,
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "fillOpacity": 8,
+            "showPoints": "never",
+            "spanNulls": false,
+            "axisCenteredZero": false,
+            "axisPlacement": "auto",
+            "stacking": {
+              "mode": "none",
+              "group": "A"
+            }
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      }
+    },
+    {
+      "id": 13,
+      "title": "Network traffic",
+      "type": "timeseries",
+      "gridPos": {
+        "x": 16,
+        "y": 13,
+        "w": 8,
+        "h": 5
+      },
+      "description": "Reported and estimated bytes sent by Plex. The estimate is derived from active playback bitrate and can diverge from Plex's counter.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "editorMode": "code",
+          "expr": "rate(transmit_bytes_total{job=~\"${job:regex}\",instance=~\"${instance:regex}\",server_type=\"plex\"}[$__rate_interval])",
+          "format": "time_series",
+          "instant": false,
+          "legendFormat": "Reported",
+          "range": true,
+          "refId": "A",
+          "interval": "$scrape_interval"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "editorMode": "code",
+          "expr": "rate(estimated_transmit_bytes_total{job=~\"${job:regex}\",instance=~\"${instance:regex}\",server_type=\"plex\"}[$__rate_interval])",
+          "format": "time_series",
+          "instant": false,
+          "legendFormat": "Estimated",
+          "range": true,
+          "refId": "B",
+          "interval": "$scrape_interval"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "Bps",
+          "noValue": "No samples",
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "fillOpacity": 8,
+            "showPoints": "never",
+            "spanNulls": false,
+            "axisCenteredZero": false,
+            "axisPlacement": "auto",
+            "stacking": {
+              "mode": "none",
+              "group": "A"
+            }
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      }
+    },
+    {
+      "id": 14,
+      "title": "Libraries",
+      "type": "row",
+      "gridPos": {
+        "x": 0,
+        "y": 18,
+        "w": 24,
+        "h": 1
+      },
+      "description": "",
+      "collapsed": false,
+      "panels": []
+    },
+    {
+      "id": 15,
+      "title": "Library items",
+      "type": "bargauge",
+      "gridPos": {
+        "x": 0,
+        "y": 19,
+        "w": 8,
+        "h": 8
+      },
+      "description": "Counts are cached and may lag a large Plex scan. TV libraries report shows here; plex_media_episodes reports episodes.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "editorMode": "code",
+          "expr": "max by (library) (plex_library_items{job=~\"${job:regex}\",instance=~\"${instance:regex}\",server_type=\"plex\"})",
+          "format": "time_series",
+          "instant": true,
+          "legendFormat": "{{library}}",
+          "range": false,
+          "refId": "A",
+          "interval": "$scrape_interval"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "noValue": "No samples",
+          "color": {
+            "mode": "palette-classic"
+          },
+          "min": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "orientation": "horizontal",
+        "displayMode": "basic",
+        "showUnfilled": true,
+        "reduceOptions": {
+          "values": false,
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": ""
+        }
+      }
+    },
+    {
+      "id": 16,
+      "title": "Library storage",
+      "type": "bargauge",
+      "gridPos": {
+        "x": 8,
+        "y": 19,
+        "w": 8,
+        "h": 8
+      },
+      "description": "Plex-reported storage by library. Overlapping libraries can count the same files more than once.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "editorMode": "code",
+          "expr": "max by (library) (library_storage_total{job=~\"${job:regex}\",instance=~\"${instance:regex}\",server_type=\"plex\"})",
+          "format": "time_series",
+          "instant": true,
+          "legendFormat": "{{library}}",
+          "range": false,
+          "refId": "A",
+          "interval": "$scrape_interval"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "bytes",
+          "noValue": "No samples",
+          "color": {
+            "mode": "palette-classic"
+          },
+          "min": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "orientation": "horizontal",
+        "displayMode": "basic",
+        "showUnfilled": true,
+        "reduceOptions": {
+          "values": false,
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": ""
+        }
+      }
+    },
+    {
+      "id": 17,
+      "title": "Library duration",
+      "type": "bargauge",
+      "gridPos": {
+        "x": 16,
+        "y": 19,
+        "w": 8,
+        "h": 8
+      },
+      "description": "Plex reports duration in milliseconds; this panel converts it to seconds.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "editorMode": "code",
+          "expr": "max by (library) (library_duration_total{job=~\"${job:regex}\",instance=~\"${instance:regex}\",server_type=\"plex\"}) / 1000",
+          "format": "time_series",
+          "instant": true,
+          "legendFormat": "{{library}}",
+          "range": false,
+          "refId": "A",
+          "interval": "$scrape_interval"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "noValue": "No samples",
+          "color": {
+            "mode": "palette-classic"
+          },
+          "min": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "orientation": "horizontal",
+        "displayMode": "basic",
+        "showUnfilled": true,
+        "reduceOptions": {
+          "values": false,
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": ""
+        }
+      }
+    },
+    {
+      "id": 18,
+      "title": "Playback detail",
+      "type": "row",
+      "gridPos": {
+        "x": 0,
+        "y": 27,
+        "w": 24,
+        "h": 1
+      },
+      "description": "",
+      "collapsed": false,
+      "panels": []
+    },
+    {
+      "id": 19,
+      "title": "Current sessions",
+      "type": "table",
+      "gridPos": {
+        "x": 0,
+        "y": 28,
+        "w": 24,
+        "h": 8
+      },
+      "description": "Current and recently retained session records. This table uses the bounded state metric and does not infer activity from plays_total.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "editorMode": "code",
+          "expr": "max by (session, user, state) (plex_session_state{job=~\"${job:regex}\",instance=~\"${instance:regex}\",server_type=\"plex\"})",
+          "format": "table",
+          "instant": true,
+          "legendFormat": "",
+          "range": false,
+          "refId": "A",
+          "interval": "$scrape_interval"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "noValue": "No samples",
+          "color": {
+            "mode": "palette-classic"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "showHeader": true,
+        "cellHeight": "sm",
+        "footer": {
+          "show": false
+        }
+      },
+      "transformations": [
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {
+              "Time": true
+            },
+            "renameByName": {
+              "session": "Session",
+              "user": "User",
+              "state": "State",
+              "Value": "Current"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "id": 20,
+      "title": "Playback time",
+      "type": "timeseries",
+      "gridPos": {
+        "x": 0,
+        "y": 36,
+        "w": 12,
+        "h": 8
+      },
+      "description": "Per-session observed playback seconds. Labels are stable across bitrate changes; restarts and short sessions affect the history.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "editorMode": "code",
+          "expr": "sum by (user) (rate(plex_session_play_seconds_total{job=~\"${job:regex}\",instance=~\"${instance:regex}\",server_type=\"plex\"}[$__rate_interval]))",
+          "format": "time_series",
+          "instant": false,
+          "legendFormat": "{{user}}",
+          "range": true,
+          "refId": "A",
+          "interval": "$scrape_interval"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "suffix:s/s",
+          "noValue": "No samples",
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "fillOpacity": 8,
+            "showPoints": "never",
+            "spanNulls": false,
+            "axisCenteredZero": false,
+            "axisPlacement": "auto",
+            "stacking": {
+              "mode": "none",
+              "group": "A"
+            }
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      }
+    },
+    {
+      "id": 21,
+      "title": "Bitrate and bandwidth",
+      "type": "timeseries",
+      "gridPos": {
+        "x": 12,
+        "y": 36,
+        "w": 12,
+        "h": 8
+      },
+      "description": "Numeric gauges avoid putting changing bitrate values in playback labels. Location is reported when Plex supplies it.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "editorMode": "code",
+          "expr": "max by (session, user, location) (plex_session_bitrate_kbps{job=~\"${job:regex}\",instance=~\"${instance:regex}\",server_type=\"plex\"})",
+          "format": "time_series",
+          "instant": false,
+          "legendFormat": "bitrate {{user}} / {{location}}",
+          "range": true,
+          "refId": "A",
+          "interval": "$scrape_interval"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "editorMode": "code",
+          "expr": "max by (session, user, location) (plex_session_bandwidth_kbps{job=~\"${job:regex}\",instance=~\"${instance:regex}\",server_type=\"plex\"})",
+          "format": "time_series",
+          "instant": false,
+          "legendFormat": "bandwidth {{user}} / {{location}}",
+          "range": true,
+          "refId": "B",
+          "interval": "$scrape_interval"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "Kbits",
+          "noValue": "No samples",
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "fillOpacity": 8,
+            "showPoints": "never",
+            "spanNulls": false,
+            "axisCenteredZero": false,
+            "axisPlacement": "auto",
+            "stacking": {
+              "mode": "none",
+              "group": "A"
+            }
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      }
+    },
+    {
+      "id": 22,
+      "title": "Video transcode pipeline",
+      "type": "table",
+      "gridPos": {
+        "x": 0,
+        "y": 44,
+        "w": 12,
+        "h": 7
+      },
+      "description": "A row exists when Plex reports video transcode evidence. Hardware/software fields are bounded values; unknown means Plex omitted the detail.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "editorMode": "code",
+          "expr": "max by (session, user, decode, encode) (plex_session_video_transcode{job=~\"${job:regex}\",instance=~\"${instance:regex}\",server_type=\"plex\"})",
+          "format": "table",
+          "instant": true,
+          "legendFormat": "",
+          "range": false,
+          "refId": "A",
+          "interval": "$scrape_interval"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none",
+          "noValue": "No samples",
+          "color": {
+            "mode": "palette-classic"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "showHeader": true,
+        "cellHeight": "sm",
+        "footer": {
+          "show": false
+        }
+      },
+      "transformations": [
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {
+              "Time": true,
+              "Value": true
+            },
+            "renameByName": {
+              "session": "Session",
+              "user": "User",
+              "decode": "Decode",
+              "encode": "Encode"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "id": 23,
+      "title": "Playback by transcode",
+      "type": "bargauge",
+      "gridPos": {
+        "x": 12,
+        "y": 44,
+        "w": 6,
+        "h": 7
+      },
+      "description": "Observed playback-time rate by transcode type. This is sampled activity, not an exact concurrent count.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "editorMode": "code",
+          "expr": "sum by (transcode_type) (rate(play_seconds_total{job=~\"${job:regex}\",instance=~\"${instance:regex}\",server_type=\"plex\"}[$__rate_interval]))",
+          "format": "time_series",
+          "instant": true,
+          "legendFormat": "{{transcode_type}}",
+          "range": false,
+          "refId": "A",
+          "interval": "$scrape_interval"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "suffix:s/s",
+          "noValue": "No samples",
+          "color": {
+            "mode": "palette-classic"
+          },
+          "min": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "orientation": "horizontal",
+        "displayMode": "basic",
+        "showUnfilled": true,
+        "reduceOptions": {
+          "values": false,
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": ""
+        }
+      }
+    },
+    {
+      "id": 24,
+      "title": "Playback by subtitle action",
+      "type": "bargauge",
+      "gridPos": {
+        "x": 18,
+        "y": 44,
+        "w": 6,
+        "h": 7
+      },
+      "description": "Observed playback-time rate by subtitle action.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "editorMode": "code",
+          "expr": "sum by (subtitle_action) (rate(play_seconds_total{job=~\"${job:regex}\",instance=~\"${instance:regex}\",server_type=\"plex\"}[$__rate_interval]))",
+          "format": "time_series",
+          "instant": true,
+          "legendFormat": "{{subtitle_action}}",
+          "range": false,
+          "refId": "A",
+          "interval": "$scrape_interval"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "suffix:s/s",
+          "noValue": "No samples",
+          "color": {
+            "mode": "palette-classic"
+          },
+          "min": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "orientation": "horizontal",
+        "displayMode": "basic",
+        "showUnfilled": true,
+        "reduceOptions": {
+          "values": false,
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": ""
+        }
+      }
+    }
+  ],
+  "templating": {
+    "list": [
+      {
+        "name": "datasource",
+        "label": "Prometheus",
+        "type": "datasource",
+        "query": "prometheus",
+        "refresh": 1,
+        "options": [],
+        "current": {}
+      },
+      {
+        "name": "job",
+        "label": "Job",
+        "type": "query",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "${datasource}"
+        },
+        "query": {
+          "query": "label_values(server_info{server_type=\"plex\"}, job)",
+          "refId": "StandardVariableQuery"
+        },
+        "definition": "label_values(server_info{server_type=\"plex\"}, job)",
+        "refresh": 1,
+        "sort": 1,
+        "multi": false,
+        "includeAll": false,
+        "options": [],
+        "current": {}
+      },
+      {
+        "name": "instance",
+        "label": "Instance",
+        "type": "query",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "${datasource}"
+        },
+        "query": {
+          "query": "label_values(server_info{job=~\"${job:regex}\",server_type=\"plex\"}, instance)",
+          "refId": "StandardVariableQuery"
+        },
+        "definition": "label_values(server_info{job=~\"${job:regex}\",server_type=\"plex\"}, instance)",
+        "refresh": 1,
+        "sort": 1,
+        "multi": false,
+        "includeAll": false,
+        "options": [],
+        "current": {}
+      },
+      {
+        "name": "scrape_interval",
+        "label": "Scrape interval",
+        "type": "interval",
+        "query": "15s,30s,1m,2m,5m",
+        "auto": false,
+        "refresh": 2,
+        "options": [],
+        "current": {
+          "text": "1m",
+          "value": "1m"
+        }
+      }
+    ]
+  }
+}

@@ -1,0 +1,38 @@
+groups:
+  - name: plex-exporter
+    rules:
+      - alert: PlexExporterDown
+        expr: up{job=~"plex|plex[-_]exporter"} == 0
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Cannot scrape Plex exporter on {{ $labels.instance }}"
+      - alert: PlexSessionsUnavailable
+        expr: plex_operation_success{operation="sessions"} == 0
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Plex session requests are failing on {{ $labels.instance }}"
+      - alert: PlexSessionDataStale
+        expr: time() - plex_operation_last_success_timestamp_seconds{operation="sessions"} > 60
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Plex session data is over a minute old on {{ $labels.instance }}"
+      - alert: PlexLibraryDataStale
+        expr: time() - plex_operation_last_success_timestamp_seconds{operation="library"} > 3600
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Plex library metadata is over an hour old on {{ $labels.instance }}"
+      - alert: PlexExporterErrors
+        expr: sum by (job, instance, operation) (increase(plex_exporter_errors_total[5m])) > 10
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Repeated Plex exporter {{ $labels.operation }} errors on {{ $labels.instance }}"

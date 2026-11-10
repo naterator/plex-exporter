@@ -20,6 +20,7 @@ const (
 	stateStopped   sessionState = "stopped"
 	statePaused    sessionState = "paused"
 	stateBuffering sessionState = "buffering"
+	stateUnknown   sessionState = "unknown"
 
 	mediaTypeEpisode = "episode"
 
@@ -29,11 +30,24 @@ const (
 	sessionTimeout = time.Minute
 )
 
+var trackedSessionStates = [...]sessionState{
+	statePlaying,
+	statePaused,
+	stateBuffering,
+	stateStopped,
+	stateUnknown,
+}
+
 type session struct {
-	session        plex.Metadata
-	media          plex.Metadata
-	state          sessionState
-	lastUpdate     time.Time
+	session    plex.Metadata
+	media      plex.Metadata
+	state      sessionState
+	lastUpdate time.Time
+	// confirmedAt records the last successful observation from either the
+	// session endpoint or websocket. It is intentionally separate from
+	// lastUpdate so a failed poll can age a session into unknown without
+	// advancing playback time.
+	confirmedAt    time.Time
 	playStarted    time.Time
 	prevPlayedTime time.Duration
 	// Persisted library labels resolved when the media was first seen.
@@ -48,6 +62,13 @@ type session struct {
 	transcodeType string
 	// persisted subtitle action for this session (burn|copy|none)
 	subtitleAction string
+	// Hardware transcode evidence is populated only when Plex explicitly
+	// reports separate decoder/encoder outcomes. A request flag alone is not
+	// enough to claim hardware was actually used.
+	transcodeHWRequested bool
+	transcodeHWDecode    string
+	transcodeHWEncode    string
+	transcodeHWKnown     bool
 }
 
 type sessions struct {
@@ -58,6 +79,7 @@ type sessions struct {
 	sessionTranscodeMap            map[string]string
 	server                         *Server
 	totalEstimatedTransmittedKBits float64
+	maxTrackedSessions             int
 	stop                           chan struct{}
 	done                           chan struct{}
 	closeOnce                      sync.Once
@@ -71,6 +93,7 @@ func NewSessions(ctx context.Context, server *Server) *sessions {
 		sessions:            map[string]session{},
 		sessionTranscodeMap: map[string]string{},
 		server:              server,
+		maxTrackedSessions:  maxTrackedSessionsFromEnv(),
 		stop:                make(chan struct{}),
 		done:                make(chan struct{}),
 	}
@@ -109,8 +132,10 @@ func (s *sessions) pruneOldSessions() {
 	defer s.mtx.Unlock()
 
 	for k, v := range s.sessions {
-		// Remove stopped sessions that are older than the timeout
-		if v.state == stateStopped && time.Since(v.lastUpdate) > sessionTimeout {
+		// Remove terminal and stale sessions after the retention interval. The
+		// final unknown scrape remains visible long enough for dashboards, but
+		// cannot permanently consume one of the bounded tracker slots.
+		if (v.state == stateStopped || v.state == stateUnknown) && time.Since(v.lastUpdate) > sessionTimeout {
 			delete(s.sessions, k)
 			delete(s.sessionTranscodeMap, k)
 			continue
@@ -138,8 +163,17 @@ func (s *sessions) SetSessionTranscodeMapping(sessionKey, transcodeSessionID str
 
 	s.mtx.Lock()
 	defer s.mtx.Unlock()
+	if s.sessionTranscodeMap == nil {
+		s.sessionTranscodeMap = make(map[string]string)
+	}
+	if s.sessions == nil {
+		s.sessions = make(map[string]session)
+	}
 
 	if transcodeSessionID != "" {
+		if !s.canTrackMappingLocked(sessionKey) {
+			return
+		}
 		s.sessionTranscodeMap[sessionKey] = transcodeSessionID
 		// A transcode update can arrive before the play-session notification.
 		// Transfer attributes from the temporary orphan once the real session
@@ -159,6 +193,12 @@ func (s *sessions) SetSessionTranscodeMapping(sessionKey, transcodeSessionID str
 				if candidate.subtitleAction != "" {
 					target.subtitleAction = candidate.subtitleAction
 				}
+				if candidate.transcodeHWKnown {
+					target.transcodeHWRequested = candidate.transcodeHWRequested
+					target.transcodeHWDecode = candidate.transcodeHWDecode
+					target.transcodeHWEncode = candidate.transcodeHWEncode
+					target.transcodeHWKnown = true
+				}
 				delete(s.sessions, key)
 			}
 			s.sessions[sessionKey] = target
@@ -169,6 +209,10 @@ func (s *sessions) SetSessionTranscodeMapping(sessionKey, transcodeSessionID str
 		if current, ok := s.sessions[sessionKey]; ok {
 			current.transcodeType = ""
 			current.subtitleAction = ""
+			current.transcodeHWRequested = false
+			current.transcodeHWDecode = ""
+			current.transcodeHWEncode = ""
+			current.transcodeHWKnown = false
 			s.sessions[sessionKey] = current
 		}
 	}
@@ -183,6 +227,9 @@ func (s *sessions) SetTranscodeType(sessionID, ttype string) {
 	}
 	s.mtx.Lock()
 	defer s.mtx.Unlock()
+	if s.sessions == nil {
+		s.sessions = make(map[string]session)
+	}
 
 	// Fast-path: exact map key match
 	if ss, ok := s.sessions[sessionID]; ok {
@@ -215,9 +262,56 @@ func (s *sessions) SetTranscodeType(sessionID, ttype string) {
 
 	// Fallback: create/set an entry under the provided key so tests that
 	// expect this behavior continue to pass.
+	if !s.canTrackLocked(sessionID) {
+		return
+	}
 	ss := s.sessions[sessionID]
 	ss.transcodeType = ttype
 	s.sessions[sessionID] = ss
+}
+
+// SetTranscodeHardware records the only hardware signal exposed by the
+// websocket model. It intentionally does not create an orphan session: a
+// hardware update without a matching playback session is not useful to
+// dashboards and must not bypass the session cardinality bound.
+func (s *sessions) SetTranscodeHardware(sessionID string, requested bool) {
+	sessionID = strings.TrimSpace(sessionID)
+	if sessionID == "" {
+		return
+	}
+	s.mtx.Lock()
+	defer s.mtx.Unlock()
+	if s.sessions == nil {
+		return
+	}
+	if key, ok := s.matchSessionKeyLocked(sessionID); ok {
+		ss := s.sessions[key]
+		ss.transcodeHWRequested = requested
+		s.sessions[key] = ss
+	}
+}
+
+func (s *sessions) SetTranscodeHardwareEvidence(sessionID, decode, encode string) {
+	sessionID = strings.TrimSpace(sessionID)
+	decode = strings.ToLower(strings.TrimSpace(decode))
+	encode = strings.ToLower(strings.TrimSpace(encode))
+	if sessionID == "" || decode == "" || encode == "" ||
+		!validTranscodeHardwareOutcome(decode) || !validTranscodeHardwareOutcome(encode) {
+		return
+	}
+	s.mtx.Lock()
+	defer s.mtx.Unlock()
+	if key, ok := s.matchSessionKeyLocked(sessionID); ok {
+		ss := s.sessions[key]
+		ss.transcodeHWDecode = decode
+		ss.transcodeHWEncode = encode
+		ss.transcodeHWKnown = true
+		s.sessions[key] = ss
+	}
+}
+
+func validTranscodeHardwareOutcome(value string) bool {
+	return value == "hardware" || value == "software" || value == "unknown"
 }
 
 // SetSubtitleAction sets the subtitle action for a given session id.
@@ -228,6 +322,9 @@ func (s *sessions) SetSubtitleAction(sessionID, action string) {
 	}
 	s.mtx.Lock()
 	defer s.mtx.Unlock()
+	if s.sessions == nil {
+		s.sessions = make(map[string]session)
+	}
 
 	if ss, ok := s.sessions[sessionID]; ok {
 		ss.subtitleAction = action
@@ -251,6 +348,9 @@ func (s *sessions) SetSubtitleAction(sessionID, action string) {
 		}
 	}
 
+	if !s.canTrackLocked(sessionID) {
+		return
+	}
 	ss := s.sessions[sessionID]
 	ss.subtitleAction = action
 	s.sessions[sessionID] = ss
@@ -544,26 +644,136 @@ func sameTranscodeID(left, right string) bool {
 	return left != "" && left == right
 }
 
+func (s *sessions) canTrackLocked(sessionID string) bool {
+	if s.sessions == nil {
+		return false
+	}
+	if _, exists := s.sessions[sessionID]; exists {
+		return true
+	}
+	max := s.maxTrackedSessions
+	if max <= 0 {
+		max = defaultMaxTrackedSessions
+	}
+	if len(s.sessions) < max {
+		return true
+	}
+	// Prefer evicting records that can no longer contribute current-session
+	// metrics. This keeps a stale client from occupying the entire bounded
+	// store while a new playback session is trying to arrive.
+	var candidate string
+	var candidateAt time.Time
+	for key, current := range s.sessions {
+		if current.state != stateStopped && current.state != stateUnknown &&
+			(current.session.SessionKey != "" || len(current.session.Media) != 0) {
+			continue
+		}
+		if candidate == "" || current.lastUpdate.Before(candidateAt) {
+			candidate = key
+			candidateAt = current.lastUpdate
+		}
+	}
+	if candidate == "" {
+		return false
+	}
+	delete(s.sessions, candidate)
+	delete(s.sessionTranscodeMap, candidate)
+	return true
+}
+
+// canTrackMappingLocked keeps the transcode lookup table bounded even when a
+// notification arrives for a session that the bounded session store rejected.
+// Existing mappings remain updateable, and mappings for already-evicted
+// sessions are reclaimed before refusing a new one.
+func (s *sessions) canTrackMappingLocked(sessionKey string) bool {
+	if _, exists := s.sessionTranscodeMap[sessionKey]; exists {
+		return true
+	}
+	max := s.maxTrackedSessions
+	if max <= 0 {
+		max = defaultMaxTrackedSessions
+	}
+	if len(s.sessionTranscodeMap) < max {
+		return true
+	}
+	for key := range s.sessionTranscodeMap {
+		if _, exists := s.sessions[key]; !exists {
+			delete(s.sessionTranscodeMap, key)
+			return true
+		}
+	}
+	return false
+}
+
+// matchSessionKeyLocked performs the inexpensive forms of the transcode
+// lookup used by the hardware evidence path. The full transcode-type matcher
+// remains deliberately more permissive because it also handles old Plex
+// websocket payload variants.
+func (s *sessions) matchSessionKeyLocked(sessionID string) (string, bool) {
+	if _, ok := s.sessions[sessionID]; ok {
+		return sessionID, true
+	}
+	for key, current := range s.sessions {
+		if current.session.SessionKey == sessionID || sameTranscodeID(key, sessionID) ||
+			sameTranscodeID(current.session.SessionKey, sessionID) {
+			return key, true
+		}
+	}
+	for key, mapped := range s.sessionTranscodeMap {
+		if sameTranscodeID(mapped, sessionID) {
+			if _, ok := s.sessions[key]; ok {
+				return key, true
+			}
+		}
+	}
+	for key, current := range s.sessions {
+		for _, media := range current.session.Media {
+			for _, part := range media.Part {
+				if sameTranscodeID(part.Key, sessionID) {
+					return key, true
+				}
+			}
+		}
+	}
+	return "", false
+}
+
 func (s *sessions) Update(sessionID string, newState sessionState, newSession *plex.Metadata, media *plex.Metadata) {
 	sessionID = strings.TrimSpace(sessionID)
 	if sessionID == "" {
 		return
 	}
+	if newState == stateStopped && newSession == nil && media == nil {
+		s.mtx.Lock()
+		_, exists := s.sessions[sessionID]
+		s.mtx.Unlock()
+		if !exists {
+			return
+		}
+	}
 	s.mtx.Lock()
 	defer s.mtx.Unlock()
+	if s.sessions == nil {
+		s.sessions = make(map[string]session)
+	}
 	s.updateLocked(sessionID, newState, newSession, media, time.Now())
 }
 
 // syncCurrent atomically reconciles the in-memory store with a session-list
 // response obtained after observedAt. Websocket events processed while the
 // request was in flight have a newer lastUpdate and therefore win over the
-// potentially stale HTTP snapshot.
-func (s *sessions) syncCurrent(current []plex.Metadata, observedAt time.Time) {
+// potentially stale HTTP snapshot. The optional rawEvidence batch is applied
+// under the same lock only for records whose snapshot was accepted.
+func (s *sessions) syncCurrent(current []plex.Metadata, observedAt time.Time, rawEvidence ...[]transcodeHardwareObservation) {
 	active := make(map[string]struct{}, len(current))
+	applied := make(map[string]struct{}, len(current))
 	now := time.Now()
 
 	s.mtx.Lock()
 	defer s.mtx.Unlock()
+	if s.sessions == nil {
+		s.sessions = make(map[string]session)
+	}
 	for i := range current {
 		metadata := &current[i]
 		sessionID := strings.TrimSpace(metadata.SessionKey)
@@ -571,17 +781,34 @@ func (s *sessions) syncCurrent(current []plex.Metadata, observedAt time.Time) {
 			continue
 		}
 		active[sessionID] = struct{}{}
-		if existing, ok := s.sessions[sessionID]; ok && !existing.lastUpdate.Before(observedAt) {
+		existing, exists := s.sessions[sessionID]
+		if exists && !existing.lastUpdate.Before(observedAt) {
 			continue
 		}
-
+		// /status/sessions can carry a sparse session snapshot while the
+		// metadata fetched for a notification contains the full library item.
+		// Preserve the richer cached item rather than replacing it on every
+		// successful poll.
+		media := metadata
+		if exists && existing.media.RatingKey != "" && existing.media.RatingKey == metadata.RatingKey &&
+			metadataRichness(*metadata) < metadataRichness(existing.media) {
+			media = nil
+		}
 		state := sessionState(strings.ToLower(strings.TrimSpace(metadata.Player.State)))
 		switch state {
-		case statePaused, stateBuffering:
-		default:
+		case statePaused, stateBuffering, stateStopped:
+		case statePlaying:
+		case "":
+			// /status/sessions is itself an active-session endpoint. Older Plex
+			// versions omit Player.State for those records, so treat that
+			// endpoint membership as the available playing evidence. Explicit
+			// unrecognized states still become stateUnknown below.
 			state = statePlaying
+		default:
+			state = stateUnknown
 		}
-		s.updateLocked(sessionID, state, metadata, metadata, now)
+		s.updateLocked(sessionID, state, metadata, media, now)
+		applied[sessionID] = struct{}{}
 	}
 
 	for sessionID, existing := range s.sessions {
@@ -599,11 +826,142 @@ func (s *sessions) syncCurrent(current []plex.Metadata, observedAt time.Time) {
 		}
 		s.updateLocked(sessionID, stateStopped, nil, nil, now)
 	}
+	if len(rawEvidence) > 0 {
+		s.applyTranscodeHardwareObservationsLocked(rawEvidence[0], applied)
+	}
+}
+
+func metadataRichness(metadata plex.Metadata) int {
+	richness := 0
+	if metadata.RatingKey != "" {
+		richness++
+	}
+	if metadata.Title != "" {
+		richness++
+	}
+	if metadata.Type != "" {
+		richness++
+	}
+	if metadata.Summary != "" {
+		richness++
+	}
+	if metadata.LibrarySectionID.Int64() != 0 {
+		richness++
+	}
+	if len(metadata.Media) > 0 {
+		richness += 2
+		if len(metadata.Media[0].Part) > 0 {
+			richness++
+		}
+	}
+	return richness
+}
+
+// markStale moves active sessions to an explicit unknown state only after the
+// configured grace period. It does not update confirmedAt and therefore never
+// makes a failed poll look like playback progress.
+func (s *sessions) markStale(now time.Time, staleAfter time.Duration) {
+	if s == nil || staleAfter <= 0 {
+		return
+	}
+	s.mtx.Lock()
+	defer s.mtx.Unlock()
+	for key, current := range s.sessions {
+		if current.state == stateStopped || current.state == stateUnknown {
+			continue
+		}
+		confirmed := current.confirmedAt
+		if confirmed.IsZero() {
+			confirmed = current.lastUpdate
+		}
+		if confirmed.IsZero() || now.Sub(confirmed) < staleAfter {
+			continue
+		}
+		// Freeze playback at the last confirmed observation. The wall-clock
+		// timestamp still advances so this record is not reconsidered on every
+		// failed request, but no time after confirmed is banked.
+		if current.state == statePlaying && !current.playStarted.IsZero() {
+			if playedFor := confirmed.Sub(current.playStarted); playedFor > 0 {
+				current.prevPlayedTime += playedFor
+				if bitrate := sessionBitrate(current); bitrate > 0 {
+					s.totalEstimatedTransmittedKBits += playedFor.Seconds() * float64(bitrate)
+				}
+			}
+		}
+		current.state = stateUnknown
+		current.lastUpdate = now
+		s.sessions[key] = current
+	}
+}
+
+// cachedMetadata returns the most recent metadata for the session when it is
+// for the same rating key. A rating key check prevents one session's previous
+// title from being reused after Plex switches the client to another item.
+func (s *sessions) cachedMetadata(sessionKey, ratingKey string) (plex.Metadata, bool) {
+	if s == nil {
+		return plex.Metadata{}, false
+	}
+	sessionKey = strings.TrimSpace(sessionKey)
+	ratingKey = strings.TrimSpace(ratingKey)
+	if sessionKey == "" || ratingKey == "" {
+		return plex.Metadata{}, false
+	}
+	s.mtx.Lock()
+	defer s.mtx.Unlock()
+	current, ok := s.sessions[sessionKey]
+	if !ok {
+		return plex.Metadata{}, false
+	}
+	if current.media.RatingKey == ratingKey {
+		return current.media, true
+	}
+	if current.session.RatingKey == ratingKey && (len(current.session.Media) > 0 || current.session.Title != "") {
+		return current.session, true
+	}
+	return plex.Metadata{}, false
 }
 
 func (s *sessions) updateLocked(sessionID string, newState sessionState, newSession *plex.Metadata, media *plex.Metadata, now time.Time) {
+	switch newState {
+	case statePlaying, statePaused, stateBuffering, stateStopped, stateUnknown:
+	default:
+		newState = stateUnknown
+	}
+	if s.sessions == nil {
+		s.sessions = make(map[string]session)
+	}
+	if !s.canTrackLocked(sessionID) {
+		return
+	}
 
 	ss := s.sessions[sessionID]
+	previousRatingKey := strings.TrimSpace(ss.media.RatingKey)
+	if previousRatingKey == "" {
+		previousRatingKey = strings.TrimSpace(ss.session.RatingKey)
+	}
+	incomingRatingKey := ""
+	if newSession != nil {
+		incomingRatingKey = strings.TrimSpace(newSession.RatingKey)
+	}
+	if incomingRatingKey == "" && media != nil {
+		incomingRatingKey = strings.TrimSpace(media.RatingKey)
+	}
+	if previousRatingKey != "" && incomingRatingKey != "" && previousRatingKey != incomingRatingKey {
+		// A client can keep one session key while moving to another item. Do
+		// not carry library or transcode labels from the previous item into the
+		// new one; playback time remains session-scoped and is intentionally
+		// preserved.
+		ss.resolvedLibraryName = ""
+		ss.resolvedLibraryID = ""
+		ss.resolvedLibraryType = ""
+		ss.transcodeType = ""
+		ss.subtitleAction = ""
+		ss.transcodeHWRequested = false
+		ss.transcodeHWDecode = ""
+		ss.transcodeHWEncode = ""
+		ss.transcodeHWKnown = false
+		delete(s.sessionTranscodeMap, sessionID)
+	}
 
 	if newSession != nil {
 		ss.session = *newSession
@@ -636,9 +994,11 @@ func (s *sessions) updateLocked(sessionID string, newState sessionState, newSess
 		// If the session was playing but now is not, then flatten
 		// the play time into the total.
 		playedFor := now.Sub(ss.playStarted)
-		ss.prevPlayedTime += playedFor
-		if len(ss.session.Media) > 0 {
-			s.totalEstimatedTransmittedKBits += playedFor.Seconds() * float64(ss.session.Media[0].Bitrate)
+		if playedFor > 0 {
+			ss.prevPlayedTime += playedFor
+			if bitrate := sessionBitrate(ss); bitrate > 0 {
+				s.totalEstimatedTransmittedKBits += playedFor.Seconds() * float64(bitrate)
+			}
 		}
 	}
 
@@ -649,6 +1009,9 @@ func (s *sessions) updateLocked(sessionID string, newState sessionState, newSess
 
 	ss.state = newState
 	ss.lastUpdate = now
+	if newState != stateUnknown {
+		ss.confirmedAt = now
+	}
 	s.sessions[sessionID] = ss
 }
 
@@ -676,6 +1039,9 @@ func (s *sessions) Describe(ch chan<- *prometheus.Desc) {
 	ch <- metrics.MetricPlaySecondsTotalDesc
 
 	ch <- metrics.MetricEstimatedTransmittedBytesTotal
+	for _, desc := range metrics.SessionDescs() {
+		ch <- desc
+	}
 }
 
 func (s *sessions) Collect(ch chan<- prometheus.Metric) {
@@ -691,19 +1057,31 @@ func (s *sessions) Collect(ch chan<- prometheus.Metric) {
 	estimatedKBits := s.totalEstimatedTransmittedKBits
 	s.mtx.Unlock()
 
-	serverName, serverID := s.server.identity()
+	serverName, serverID := "", ""
+	if s.server != nil {
+		serverName, serverID = s.server.identity()
+	}
 	now := time.Now()
+	stateCounts := make(map[sessionState]float64, len(trackedSessionStates))
+	for _, state := range trackedSessionStates {
+		stateCounts[state] = 0
+	}
 
 	for _, snapshot := range sessionSnapshots {
 		id := snapshot.id
 		session := snapshot.session
-		if session.playStarted.IsZero() {
-			continue
-		}
 
 		// Skip orphaned sessions (those with no session key and no meaningful data)
 		// These can occur when transcode notifications arrive for sessions that don't exist
-		if session.session.SessionKey == "" && len(session.session.Media) == 0 {
+		if session.session.SessionKey == "" && len(session.session.Media) == 0 && session.media.RatingKey == "" {
+			continue
+		}
+
+		collectCurrentSessionMetrics(
+			ch, id, session, serverName, serverID, now, &estimatedKBits, stateCounts,
+		)
+
+		if session.playStarted.IsZero() {
 			continue
 		}
 
@@ -717,7 +1095,10 @@ func (s *sessions) Collect(ch chan<- prometheus.Metric) {
 			libraryID = session.resolvedLibraryID
 			libraryType = session.resolvedLibraryType
 		} else {
-			library := s.server.Library(strconv.FormatInt(session.media.LibrarySectionID.Int64(), 10))
+			var library *Library
+			if s.server != nil {
+				library = s.server.Library(strconv.FormatInt(session.media.LibrarySectionID.Int64(), 10))
+			}
 			if library == nil {
 				libraryName = "unknown"
 				libraryID = "0"
@@ -784,9 +1165,8 @@ func (s *sessions) Collect(ch chan<- prometheus.Metric) {
 
 		totalPlayTime := session.prevPlayedTime
 		if session.state == statePlaying {
-			totalPlayTime += now.Sub(session.playStarted)
-			if len(session.session.Media) > 0 {
-				estimatedKBits += now.Sub(session.playStarted).Seconds() * float64(session.session.Media[0].Bitrate)
+			if elapsed := confirmedPlayingElapsed(session, now); elapsed > 0 {
+				totalPlayTime += elapsed
 			}
 		}
 
@@ -815,7 +1195,180 @@ func (s *sessions) Collect(ch chan<- prometheus.Metric) {
 		)
 	}
 
+	for _, state := range trackedSessionStates {
+		ch <- prometheus.MustNewConstMetric(
+			metrics.MetricSessionsDesc,
+			prometheus.GaugeValue,
+			stateCounts[state],
+			"plex", serverName, serverID, string(state),
+		)
+	}
+
 	ch <- prometheus.MustNewConstMetric(metrics.MetricEstimatedTransmittedBytesTotal, prometheus.CounterValue, estimatedKBits*128.0, "plex", serverName, serverID)
+}
+
+// collectCurrentSessionMetrics emits the bounded-label metrics for one
+// retained session and updates the aggregate state counts and estimated
+// traffic total used by the caller. Keeping this separate from the legacy
+// media-label path keeps the collector readable without changing either
+// metric contract.
+func collectCurrentSessionMetrics(
+	ch chan<- prometheus.Metric,
+	id string,
+	current session,
+	serverName, serverID string,
+	now time.Time,
+	estimatedKBits *float64,
+	stateCounts map[sessionState]float64,
+) {
+	currentState := current.state
+	if _, known := stateCounts[currentState]; !known {
+		currentState = stateUnknown
+	}
+	stateCounts[currentState]++
+	sessionID := strings.TrimSpace(current.session.SessionKey)
+	if sessionID == "" {
+		sessionID = id
+	}
+	user := current.session.User.Title
+	active := 0.0
+	if isActiveSessionState(currentState) {
+		active = 1
+	}
+	ch <- prometheus.MustNewConstMetric(
+		metrics.MetricSessionActiveDesc,
+		prometheus.GaugeValue,
+		active,
+		"plex", serverName, serverID, sessionID, user,
+	)
+	ch <- prometheus.MustNewConstMetric(
+		metrics.MetricSessionStateDesc,
+		prometheus.GaugeValue,
+		1,
+		"plex", serverName, serverID, sessionID, user, string(currentState),
+	)
+
+	// This counter has only stable identity labels. It is emitted even when
+	// its value is zero so a newly observed paused/stopped session is useful
+	// to recording rules immediately.
+	totalPlayTime := current.prevPlayedTime
+	if currentState == statePlaying && !current.playStarted.IsZero() {
+		if elapsed := confirmedPlayingElapsed(current, now); elapsed > 0 {
+			totalPlayTime += elapsed
+			if bitrate := sessionBitrate(current); bitrate > 0 {
+				*estimatedKBits += elapsed.Seconds() * float64(bitrate)
+			}
+		}
+	}
+	ch <- prometheus.MustNewConstMetric(
+		metrics.MetricSessionPlaySecondsTotalDesc,
+		prometheus.CounterValue,
+		float64(totalPlayTime.Seconds()),
+		"plex", serverName, serverID, sessionID, user,
+	)
+
+	location := sessionLocation(current.session)
+	if bitrate := sessionBitrate(current); bitrate > 0 {
+		value := float64(bitrate)
+		if !isActiveSessionState(currentState) {
+			value = 0
+		}
+		ch <- prometheus.MustNewConstMetric(
+			metrics.MetricSessionBitrateKbpsDesc,
+			prometheus.GaugeValue,
+			value,
+			"plex", serverName, serverID, sessionID, user, location,
+		)
+	}
+	if bandwidth := current.session.Session.Bandwidth; bandwidth > 0 {
+		value := float64(bandwidth)
+		if !isActiveSessionState(currentState) {
+			value = 0
+		}
+		ch <- prometheus.MustNewConstMetric(
+			metrics.MetricSessionBandwidthKbpsDesc,
+			prometheus.GaugeValue,
+			value,
+			"plex", serverName, serverID, sessionID, user, location,
+		)
+	}
+	if current.transcodeHWKnown && sessionHasVideoTranscode(current) {
+		value := 0.0
+		if isActiveSessionState(currentState) {
+			value = 1
+		}
+		ch <- prometheus.MustNewConstMetric(
+			metrics.MetricSessionVideoTranscodeDesc,
+			prometheus.GaugeValue,
+			value,
+			"plex", serverName, serverID, sessionID, user, current.transcodeHWDecode, current.transcodeHWEncode,
+		)
+	}
+}
+
+// confirmedPlayingElapsed intentionally stops at confirmedAt. A scrape may
+// happen while Plex is unreachable, but a counter must not advance during that
+// unconfirmed interval and then decrease when the stale timeout is reached.
+func confirmedPlayingElapsed(current session, now time.Time) time.Duration {
+	if current.state != statePlaying || current.playStarted.IsZero() {
+		return 0
+	}
+	end := now
+	if !current.confirmedAt.IsZero() && current.confirmedAt.Before(end) {
+		end = current.confirmedAt
+	}
+	if end.Before(current.playStarted) {
+		return 0
+	}
+	return end.Sub(current.playStarted)
+}
+
+func sessionBitrate(current session) int {
+	if len(current.session.Media) > 0 && current.session.Media[0].Bitrate > 0 {
+		return current.session.Media[0].Bitrate
+	}
+	if len(current.media.Media) > 0 && current.media.Media[0].Bitrate > 0 {
+		return current.media.Media[0].Bitrate
+	}
+	return 0
+}
+
+func isActiveSessionState(state sessionState) bool {
+	return state == statePlaying || state == statePaused || state == stateBuffering
+}
+
+func sessionLocation(metadata plex.Metadata) string {
+	if metadata.Player.Local {
+		return "lan"
+	}
+	switch strings.ToLower(strings.TrimSpace(metadata.Session.Location)) {
+	case "lan", "local":
+		return "lan"
+	case "wan", "remote":
+		return "wan"
+	}
+	if metadata.Player.Address != "" || metadata.Player.RemotePublicAddress != "" {
+		return "wan"
+	}
+	return "unknown"
+}
+
+func sessionHasVideoTranscode(current session) bool {
+	typeName := strings.ToLower(strings.TrimSpace(current.transcodeType))
+	if typeName == "video" || typeName == "both" || typeName == "hw" || typeName == "hardware" {
+		return true
+	}
+	for _, media := range current.session.Media {
+		for _, part := range media.Part {
+			if strings.EqualFold(strings.TrimSpace(part.Decision), "transcode") {
+				// An audio-only transcode is represented by an audio transcode
+				// type when websocket data is available. Without that signal,
+				// use the presence of video metadata as conservative evidence.
+				return media.VideoCodec != "" || media.VideoResolution != ""
+			}
+		}
+	}
+	return false
 }
 
 func labels(m plex.Metadata) (title, season, episodeTitle string) {

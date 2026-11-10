@@ -3,17 +3,16 @@
 [![CI](https://github.com/naterator/plex-exporter/actions/workflows/ci.yml/badge.svg)](https://github.com/naterator/plex-exporter/actions/workflows/ci.yml)
 [![License: BSD-3-Clause](https://img.shields.io/badge/license-BSD--3--Clause-blue.svg)](LICENSE)
 
-`plex-exporter` exposes Plex Media Server metrics in Prometheus format. It
-collects server and library statistics through the Plex API and tracks playback
-sessions through Plex's WebSocket event stream.
+Plex metrics for Prometheus, with a Grafana dashboard. Tracks playback sessions,
+transcodes, bandwidth, host utilization, and library counts and storage.
 
-It reports:
+![Plex Exporter dashboard](grafana/plex-exporter.png)
 
-- CPU, memory, bandwidth, storage, duration, and media counts
-- Playback time and play counts by user, device, title, and library
-- Stream, transcode, resolution, bitrate, and subtitle details
+Grafana dashboard with example data.
 
-## Run with Docker
+## Run it
+
+Set the Plex server URL and an admin token:
 
 ```bash
 docker run -d \
@@ -25,126 +24,175 @@ docker run -d \
   ghcr.io/naterator/plex-exporter:latest
 ```
 
-Metrics are available at `http://127.0.0.1:9000/metrics`.
-
-Add the exporter to Prometheus:
+The exporter serves metrics at `http://127.0.0.1:9000/metrics`. Add it to
+Prometheus:
 
 ```yaml
 scrape_configs:
   - job_name: plex
+    scrape_interval: 30s
     static_configs:
       - targets: ["exporter-host:9000"]
 ```
 
-The exporter does not authenticate `/metrics`. Playback labels can expose Plex
-usernames, devices, and media titles, so bind it to localhost or a trusted
-network, or place it behind an authenticated reverse proxy.
+Keep the metrics port on a trusted network. Session labels include usernames,
+devices, and media titles, and the exporter doesn't authenticate requests.
+
+For Kubernetes, create a Secret named `plex-exporter` with `server` and `token`
+keys, then apply [`deploy/kubernetes.yaml`](deploy/kubernetes.yaml) in the same
+namespace. Pin an image tag or digest for deployment. The example probes
+`/healthz` so Prometheus can keep scraping diagnostics while Plex is down.
+
+## Grafana
+
+Import [`grafana/plex-exporter.json`](grafana/plex-exporter.json) through
+Grafana's dashboard import screen. Choose your Prometheus data source, job, and
+instance, then set the dashboard's scrape interval to match that job. The file
+uses Grafana's built-in panels and has no fixed hostnames or data source UIDs.
+
+The top panels show exporter availability, Plex request health, data age, and
+session state. Playback, library, and traffic panels follow. Job and instance
+choices work when no one is watching.
+
+The dashboard separates current session gauges from retained playback counters.
+Stopped sessions disappear from the active count immediately; their counters
+stay briefly so Prometheus can collect the last sample. Watch-time charts show
+sampled increments. A stream shorter than the scrape interval can be missed,
+and those charts don't reconstruct Plex's watch history.
+
+[`prometheus/alerts.yml`](prometheus/alerts.yml) has rules for exporter outages,
+failed session requests, stale data, and repeated errors. Add the file to your
+Prometheus `rule_files` configuration. Adjust the exporter job matcher and
+freshness thresholds for your scrape and poll intervals.
 
 ## Configuration
 
-| Variable | Default | Purpose |
+The binary reads environment variables at startup. It doesn't load `.env`
+files; pass one with Docker's `--env-file` option if needed.
+
+| Variable | Default | Description |
 | --- | --- | --- |
-| `PLEX_SERVER` | required | Full `http` or `https` URL of the Plex server. |
-| `PLEX_TOKEN` | required | Plex [authentication token](https://support.plex.tv/articles/204059436-finding-an-authentication-token-x-plex-token/). |
-| `LIBRARY_REFRESH_INTERVAL` | `15` | Minutes between expensive library-count queries. `0` disables caching and queries on every five-second refresh. |
-| `LIBRARY_METADATA_REFRESH_INTERVAL` | `15` | Minutes between library inventory and storage-total queries. `0` queries on every five-second refresh. |
-| `PLEX_CLIENT_TIMEOUT_SECONDS` | `10` | Timeout for Plex HTTP requests. |
+| `PLEX_SERVER` | required | Plex URL, including `http://` or `https://` and its port. |
+| `PLEX_TOKEN` | required | Plex admin token. |
+| `LISTEN_ADDR` | `:9000` | Address and port for metrics and health checks. |
+| `SESSION_POLL_INTERVAL_SECONDS` | `5` | Interval between session-list requests. |
+| `SESSION_STALE_TIMEOUT_SECONDS` | `300` | Maximum age of unconfirmed session state before it becomes unknown. |
+| `SESSION_MAX_TRACKED_SESSIONS` | `256` | Maximum tracked sessions, including recently stopped records. |
+| `SESSION_READINESS_TIMEOUT_SECONDS` | `120` | Maximum session-data age accepted by `/readyz`. |
+| `LIBRARY_REFRESH_INTERVAL` | `15` | Minutes between library-count queries. `0` queries on every refresh. |
+| `LIBRARY_METADATA_REFRESH_INTERVAL` | `15` | Minutes between library inventory and storage queries. `0` queries on every refresh. |
+| `PLEX_CLIENT_TIMEOUT_SECONDS` | `10` | HTTP request timeout. |
 | `LOG_LEVEL` | `info` | `debug`, `info`, `warn`, or `error`. |
-| `LOG_FORMAT` | JSON | Set to `console` for human-readable output. |
-| `ENVIRONMENT` | unset | Set to `development` to use console logging. |
-| `TZ` | system timezone | IANA timezone such as `America/Chicago`. |
-| `SKIP_TLS_VERIFICATION` | `false` | Skip TLS certificate validation. Insecure; use only on trusted networks. |
+| `LOG_FORMAT` | JSON | Set to `console` for readable logs. |
+| `ENVIRONMENT` | unset | `development` also selects console logging. |
+| `TZ` | system timezone | IANA timezone, such as `America/Chicago`. |
+| `SKIP_TLS_VERIFICATION` | `false` | Disable certificate verification for a trusted private endpoint. |
 
-The binary does not load `.env` files. Pass one with Docker's `--env-file`
-option or configure variables through your service manager.
+## How collection works
 
-### Library refresh behavior
+Session polling runs independently of the WebSocket connection and library
+refreshes. WebSocket events update playback promptly; polling fills in missed
+play, pause, and stop events. Media metadata is cached for each session and
+rating key, then refreshed when the item changes.
 
-The exporter discovers the library inventory at startup, waits about 15 seconds
-before its first full library count, and refreshes current server data every
-five seconds. Library inventory and storage totals are reused until
-`LIBRARY_METADATA_REFRESH_INTERVAL` expires because Plex's
-`/media/providers?includeStorage=1` endpoint can scan a substantial portion of
-large library databases. Expensive item, episode, and track counts are reused
-until `LIBRARY_REFRESH_INTERVAL` expires. Failed metadata or count requests are
-not retried until their corresponding interval expires, preventing rapid
-retries against an unavailable Plex server.
+A failed poll leaves the last known state in place for the configured stale
+interval. Playback counters stop at the last confirmed observation. Once the
+state expires, the exporter marks it unknown. Tracking resumes when Plex
+answers again, without counting the unknown gap. The session store is bounded
+so missed events cannot grow it without limit.
 
-Keep the default intervals unless you need fresher library metadata or counts.
-Setting either interval to `0` can create substantial Plex and storage I/O on
-large libraries.
+Server statistics refresh every five seconds. Library counts and storage
+metadata use separate 15-minute caches because those requests can cause
+substantial database and disk I/O on large Plex libraries. A failed request
+keeps the last successful result and records its failure separately. Keep the
+library defaults unless you need fresher counts.
+
+The exporter stays available when Plex is temporarily unreachable or running
+startup maintenance. It retries those failures with bounded backoff. Invalid
+configuration, rejected credentials, and certificate errors at startup still
+fail with an error in the log.
+
+| Endpoint | Meaning |
+| --- | --- |
+| `/metrics` | Prometheus metrics, including diagnostics while Plex is unavailable. |
+| `/healthz` | HTTP 200 while the exporter is running; 503 during shutdown. |
+| `/readyz` | HTTP 200 after Plex is identified and the latest session request succeeded with fresh data; otherwise 503. |
+
+A successful scrape only establishes that the exporter is reachable. Check the
+operation-success and last-success metrics to tell whether Plex data is fresh.
+WebSocket failure alone doesn't make the exporter unready while polling works.
 
 ## Metrics
 
-| Metric | Description |
+Server metrics carry `server_type`, `server`, and `server_id`. Library metrics
+also carry the library name, ID, and type. Diagnostics appear before Plex has
+answered and use a fixed set of operation labels.
+
+| Metric | Meaning |
 | --- | --- |
-| `server_info` | Plex version and platform information. |
-| `host_cpu_util` | Host CPU utilization reported by Plex. |
-| `host_mem_util` | Host memory utilization reported by Plex. |
+| `plex_session_active` | `1` for a confirmed playing, paused, or buffering session; `0` for stopped or unknown state. |
+| `plex_session_state` | Current state of each tracked session. |
+| `plex_sessions` | Session counts by state, including zero counts. |
+| `plex_session_play_seconds_total` | Playback seconds with stable session labels. Use this for totals and rates. |
+| `plex_session_bitrate_kbps` | Numeric session bitrate, with location when Plex supplies it. |
+| `plex_session_bandwidth_kbps` | Numeric session bandwidth reported by Plex. |
+| `plex_session_video_transcode` | Video-transcode activity and hardware/software evidence for decoding and encoding. Missing evidence is unknown. |
+| `plex_operation_success` | Whether the latest request for an operation succeeded. |
+| `plex_operation_last_success_timestamp_seconds` | Last successful request time; `0` before the first success. |
+| `plex_exporter_errors_total` | Failed requests by operation. |
+| `plex_websocket_connected` | Notification connection state. |
+| `server_info` | Plex version and platform. |
+| `host_cpu_util`, `host_mem_util` | Plex host CPU and memory percentages, from 0 to 100. |
 | `library_duration_total` | Library duration in milliseconds. |
 | `library_storage_total` | Library storage in bytes. |
-| `plex_library_items` | Items in each library, including a `content_type` label. |
-| `plex_media_movies` | Total movies. |
-| `plex_media_episodes` | Total TV episodes. |
-| `plex_media_music` | Total music tracks. |
-| `plex_media_photos` | Total photos. |
-| `plex_media_other_videos` | Total home and other videos. |
-| `plays_total` | Play count by session and media attributes. |
-| `play_seconds_total` | Playback time by session and media attributes. |
-| `transmit_bytes_total` | Bytes transmitted according to Plex statistics. |
-| `estimated_transmit_bytes_total` | Estimated transmitted bytes. |
+| `plex_library_items` | Items per library, with a `content_type` label. TV libraries count shows. |
+| `plex_media_movies`, `plex_media_episodes`, `plex_media_music` | Total movie items, TV episodes, and music tracks. |
+| `plex_media_photos`, `plex_media_other_videos` | Total photos and other videos. |
+| `transmit_bytes_total` | Bytes reported by Plex's bandwidth endpoint. |
+| `estimated_transmit_bytes_total` | Estimated transmitted bytes from playback bitrate. |
 
-Server series use `server_type`, `server`, and `server_id` labels. Library
-series add `library_type`, `library`, and `library_id`. Playback series also
-include media titles, stream properties, device, user, session, transcode, and
-subtitle labels.
+The legacy `plays_total` and `play_seconds_total` metrics keep their detailed
+labels for existing dashboards. `plays_total` is fixed at `1` for each retained
+session, so its rate doesn't count playback starts. Prefer the new session
+metrics for current state and stable counters; bitrate changes can split the
+legacy time metric into separate series.
 
-## Build from source
+Host statistics and reported bandwidth need access to Plex's statistics
+endpoints. Missing data stays missing. Library totals can count the same media
+more than once when libraries overlap. Neither traffic counter is a billing
+measurement, and exporter restarts reset its counters.
 
-The project uses the Go version in [`.go-version`](.go-version).
+## Build and check
+
+Use the Go version in [`.go-version`](.go-version):
 
 ```bash
-git clone https://github.com/naterator/plex-exporter.git
-cd plex-exporter
 go build -o plex-exporter ./cmd/plex-exporter
-
-PLEX_SERVER="http://192.168.1.100:32400" \
-PLEX_TOKEN="your-plex-token" \
-./plex-exporter
+go test -race -mod=readonly ./...
+go vet -mod=readonly ./...
+golangci-lint run ./... --timeout=5m
 ```
 
-Make targets are also available:
+`make build` writes a binary for the current OS and architecture to `bin/`.
+`make build-all` builds Linux, macOS, and FreeBSD binaries for amd64 and arm64.
+To build the container locally:
 
 ```bash
-make build      # current OS and architecture
-make build-all  # Linux, macOS, and FreeBSD; amd64 and arm64
 docker build -t plex-exporter:local .
 ```
 
-Make writes binaries to `bin/<os>/plex-exporter-<arch>`.
+Changes to dashboard panels belong in
+[`tools/generate-dashboard.py`](tools/generate-dashboard.py). Run it to update
+the committed JSON.
 
-## Development
+The optional [preview renderer](tools/render-dashboard-preview.js) needs Node.js,
+Playwright, and a headless browser. Set `GRAFANA_URL`, `GRAFANA_USER`, and
+`GRAFANA_PASSWORD`, then run it from the repository root. It renders example
+data through Grafana's snapshot viewer and doesn't save a dashboard to Grafana.
 
-```bash
-gofmt -s -w $(git ls-files '*.go')
-go mod verify
-go mod tidy -diff
-golangci-lint run ./... --timeout=5m
-go vet -mod=readonly ./...
-go test -race -mod=readonly ./...
-```
+CI checks formatting, module files, lint, vet, race tests, cross-platform
+builds, and container builds. A successful build on `main` publishes the image
+to [GHCR](https://github.com/naterator/plex-exporter/pkgs/container/plex-exporter)
+with `latest` and commit tags.
 
-Pull requests run formatting, module, lint, vet, race-test, cross-build, and
-multi-platform container checks in GitHub Actions.
-
-## Releases
-
-A successful `main` build publishes Linux amd64 and arm64 images to
-[GHCR](https://github.com/naterator/plex-exporter/pkgs/container/plex-exporter)
-as `latest` and a short commit tag. CI also stores Linux, macOS, and FreeBSD
-binaries for amd64 and arm64 as workflow artifacts. Pin a commit tag or image
-digest for reproducible deployments.
-
-## License
-
-[BSD 3-Clause](LICENSE)
+[BSD 3-Clause license](LICENSE).
